@@ -331,56 +331,53 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
         Thread {
             try {
                 val pm = reactApplicationContext.packageManager
-
-                // Method 1: ls /data/data — root sees ALL installed app dirs
-                val dataDirResult = Shell.cmd("ls /data/data 2>/dev/null").exec()
-                val dataPackages = dataDirResult.out
-                    .flatMap { it.trim().split("\\s+".toRegex()) }
-                    .filter { it.contains(".") && !it.startsWith(".") }
-                    .toMutableSet()
-
-                // Method 2: pm list packages (catches some pm list misses)
-                val pmResult = Shell.cmd("pm list packages 2>/dev/null").exec()
-                pmResult.out
-                    .filter { it.startsWith("package:") }
-                    .map { it.removePrefix("package:").trim() }
-                    .forEach { dataPackages.add(it) }
-
-                // third-party set
-                val thirdParty = Shell.cmd("pm list packages -3 2>/dev/null").exec().out
-                    .filter { it.startsWith("package:") }
-                    .map { it.removePrefix("package:").trim() }
-                    .toSet()
-
                 val arr = WritableNativeArray()
+                val seen = mutableSetOf<String>()
 
-                for (pkg in dataPackages) {
+                // ── Step 1: PackageManager API (no root needed) ──
+                // This gives correct app names and works on real devices + virtual envs
+                @Suppress("DEPRECATION")
+                val installedApps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+
+                for (appInfo in installedApps) {
+                    val pkg = appInfo.packageName
                     if (pkg.isBlank()) continue
-                    try {
-                        val appInfo = pm.getApplicationInfo(pkg, 0)
-                        val appName = pm.getApplicationLabel(appInfo).toString()
-                        val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-                                    && (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0
-                                    && !thirdParty.contains(pkg)
+                    seen.add(pkg)
+                    val appName = pm.getApplicationLabel(appInfo).toString()
+                    val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                                && (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0
 
+                    val map = WritableNativeMap()
+                    map.putString("packageName", pkg)
+                    map.putString("appName", appName)
+                    map.putBoolean("isSystemApp", isSystem)
+                    arr.pushMap(map)
+                }
+
+                // ── Step 2: root scan for extra packages PM missed (e.g. inside virtual env) ──
+                try {
+                    val thirdParty = Shell.cmd("pm list packages -3 2>/dev/null").exec().out
+                        .filter { it.startsWith("package:") }
+                        .map { it.removePrefix("package:").trim() }
+                        .toSet()
+
+                    val rootPkgs = Shell.cmd("ls /data/data 2>/dev/null").exec().out
+                        .flatMap { it.trim().split("\\s+".toRegex()) }
+                        .filter { it.contains(".") && !it.startsWith(".") && it !in seen }
+
+                    for (pkg in rootPkgs) {
+                        if (pkg.isBlank()) continue
+                        seen.add(pkg)
                         val map = WritableNativeMap()
                         map.putString("packageName", pkg)
-                        map.putString("appName", appName)
-                        map.putBoolean("isSystemApp", isSystem)
+                        map.putString("appName", pkg.split(".")
+                            .filter { it.length > 3 }
+                            .lastOrNull()
+                            ?.replaceFirstChar { it.uppercase() } ?: pkg)
+                        map.putBoolean("isSystemApp", !thirdParty.contains(pkg))
                         arr.pushMap(map)
-                    } catch (_: Exception) {
-                        // PM can't resolve it but it exists in /data/data
-                        // Show it anyway with raw package name
-                        if (pkg.count { it == '.' } >= 1) {
-                            val map = WritableNativeMap()
-                            map.putString("packageName", pkg)
-                            map.putString("appName", pkg.split(".").last()
-                                .replaceFirstChar { it.uppercase() })
-                            map.putBoolean("isSystemApp", !thirdParty.contains(pkg))
-                            arr.pushMap(map)
-                        }
                     }
-                }
+                } catch (_: Exception) {}
 
                 promise.resolve(arr)
             } catch (e: Exception) {
