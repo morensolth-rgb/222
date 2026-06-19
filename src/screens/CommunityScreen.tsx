@@ -22,8 +22,8 @@ const API = 'https://fridact-6mzysus-preview-4200.runable.site/api';
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ChatMsg = {
   id: string;
-  author: string;
-  content: string;
+  sender: string;  // server returns "sender" not "author"
+  body: string;    // server returns "body" not "content"
   ts: number;
 };
 
@@ -40,10 +40,18 @@ type Script = {
 
 type DM = {
   id: string;
-  from: string;
-  to: string;
-  content: string;
+  from: string;  // server returns fromU mapped to from
+  to: string;    // server returns toU mapped to to
+  body: string;  // server field
   ts: number;
+  read: boolean;
+};
+
+type DMThread = {
+  user: string;
+  lastMsg: string;
+  lastTs: number;
+  unread: number;
 };
 
 type Tab = 'chat' | 'scripts' | 'dms';
@@ -113,7 +121,7 @@ function ChatTab() {
   const load = async () => {
     try {
       const j = await apiGet('/community/chat');
-      if (j.ok && Array.isArray(j.messages)) {
+      if (Array.isArray(j.messages)) {
         setMsgs(j.messages);
         setTimeout(() => scrollRef.current?.scrollToEnd({animated: false}), 80);
       }
@@ -121,11 +129,11 @@ function ChatTab() {
   };
 
   const send = async () => {
-    const content = input.trim();
-    if (!content) return;
+    const body = input.trim();
+    if (!body) return;
     setInput('');
     try {
-      const j = await apiPost('/community/chat', {content});
+      const j = await apiPost('/community/chat', {body});
       if (j.ok) load();
       else Alert.alert('Error', j.error || 'Send failed');
     } catch (e: any) {
@@ -168,7 +176,7 @@ function ChatTab() {
           <Text style={c.empty}>No messages yet — be the first</Text>
         )}
         {msgs.map(msg => {
-          const mine = msg.author === myEmail;
+          const mine = msg.sender === myEmail.split('@')[0];
           return (
             <TouchableOpacity
               key={msg.id}
@@ -176,9 +184,9 @@ function ChatTab() {
               onLongPress={mine ? () => deleteMsg(msg.id) : undefined}
               style={[c.bubble, mine && c.bubbleMine]}>
               {!mine && (
-                <Text style={c.bubbleAuthor}>{msg.author.split('@')[0]}</Text>
+                <Text style={c.bubbleAuthor}>{msg.sender}</Text>
               )}
-              <Text style={[c.bubbleText, mine && c.bubbleTextMine]}>{msg.content}</Text>
+              <Text style={[c.bubbleText, mine && c.bubbleTextMine]}>{msg.body}</Text>
               <Text style={c.bubbleTime}>{fmt(msg.ts)}</Text>
             </TouchableOpacity>
           );
@@ -228,7 +236,7 @@ function ScriptsTab() {
     setLoading(true);
     try {
       const j = await apiGet('/community/scripts');
-      if (j.ok) setScripts(j.scripts ?? []);
+      if (Array.isArray(j.scripts)) setScripts(j.scripts);
     } catch (_) {}
     setLoading(false);
   };
@@ -414,49 +422,71 @@ function ScriptsTab() {
 }
 
 // ── DMs Tab ───────────────────────────────────────────────────────────────────
+// Server routes: GET /community/dm/threads, GET /community/dm/:user, POST /community/dm/:user
 function DMsTab() {
-  const [dms, setDms] = useState<DM[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [threads, setThreads] = useState<DMThread[]>([]);
+  const [activeThread, setActiveThread] = useState<string | null>(null);
+  const [messages, setMessages]   = useState<DM[]>([]);
+  const [loading, setLoading]     = useState(false);
+  const [msgLoading, setMsgLoading] = useState(false);
   const [composeModal, setComposeModal] = useState(false);
   const [recipient, setRecipient] = useState('');
-  const [dmInput, setDmInput] = useState('');
-  const [myEmail, setMyEmail] = useState('');
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [dmInput, setDmInput]     = useState('');
+  const [myEmail, setMyEmail]     = useState('');
+  const scrollRef = useRef<ScrollView>(null);
+  const pollRef   = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     AsyncStorage.getItem(LICENSE_EMAIL_STORAGE).then(e => {
       if (e) setMyEmail(e);
     });
-    load();
-    pollRef.current = setInterval(load, 5000);
+    loadThreads();
+    pollRef.current = setInterval(loadThreads, 5000);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, []);
 
-  const load = async () => {
+  useEffect(() => {
+    if (activeThread) loadConvo(activeThread);
+  }, [activeThread]);
+
+  const loadThreads = async () => {
     setLoading(true);
     try {
-      const j = await apiGet('/community/dms');
-      if (j.ok) setDms(j.messages ?? []);
+      const j = await apiGet('/community/dm/threads');
+      if (Array.isArray(j.threads)) setThreads(j.threads);
     } catch (_) {}
     setLoading(false);
   };
 
+  const loadConvo = async (user: string) => {
+    setMsgLoading(true);
+    try {
+      const j = await apiGet('/community/dm/' + encodeURIComponent(user));
+      if (Array.isArray(j.messages)) {
+        setMessages(j.messages);
+        setTimeout(() => scrollRef.current?.scrollToEnd({animated: false}), 80);
+      }
+    } catch (_) {}
+    setMsgLoading(false);
+  };
+
   const sendDm = async () => {
-    const to = recipient.trim();
-    const content = dmInput.trim();
-    if (!to || !content) {
+    const to   = activeThread ?? recipient.trim();
+    const body = dmInput.trim();
+    if (!to || !body) {
       Alert.alert('Error', 'Recipient and message are required');
       return;
     }
     try {
-      const j = await apiPost('/community/dms', {to, content});
+      const j = await apiPost('/community/dm/' + encodeURIComponent(to), {body});
       if (j.ok) {
+        setDmInput('');
         setComposeModal(false);
         setRecipient('');
-        setDmInput('');
-        load();
+        if (activeThread) loadConvo(activeThread);
+        loadThreads();
       } else {
         Alert.alert('Error', j.error || 'Send failed');
       }
@@ -465,105 +495,150 @@ function DMsTab() {
     }
   };
 
-  const deleteDm = (id: string) => {
-    Alert.alert('Delete', 'Delete this message?', [
-      {text: 'Cancel', style: 'cancel'},
-      {
-        text: 'Delete', style: 'destructive', onPress: async () => {
-          try {
-            await apiDelete('/community/dms/' + id);
-            setDms(prev => prev.filter(d => d.id !== id));
-          } catch (_) {}
-        },
-      },
-    ]);
-  };
-
-  const fmt = (ts: number) => {
+  const fmtShort = (ts: number) => {
     const d = new Date(ts);
     return d.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'});
   };
 
-  return (
-    <View style={{flex: 1}}>
-      <View style={sc.header}>
-        <Text style={sc.title}>DIRECT MESSAGES</Text>
-        <TouchableOpacity style={sc.shareBtn} onPress={() => setComposeModal(true)}>
-          <Text style={sc.shareBtnText}>+ NEW DM</Text>
-        </TouchableOpacity>
-      </View>
+  // ── Thread list view ──────────────────────────────────────────────────────
+  if (!activeThread) {
+    return (
+      <View style={{flex: 1}}>
+        <View style={sc.header}>
+          <Text style={sc.title}>DIRECT MESSAGES</Text>
+          <TouchableOpacity style={sc.shareBtn} onPress={() => setComposeModal(true)}>
+            <Text style={sc.shareBtnText}>+ NEW DM</Text>
+          </TouchableOpacity>
+        </View>
 
-      {loading && dms.length === 0 ? (
-        <ActivityIndicator color="#00ff88" style={{marginTop: 40}} />
-      ) : dms.length === 0 ? (
-        <Text style={c.empty}>No messages yet</Text>
-      ) : (
-        <FlatList
-          data={dms}
-          keyExtractor={d => d.id}
-          contentContainerStyle={{padding: 10, gap: 6}}
-          renderItem={({item}) => {
-            const mine = item.from === myEmail;
-            return (
-              <TouchableOpacity
-                style={[dm.card, mine && dm.cardMine]}
-                onLongPress={() => deleteDm(item.id)}>
+        {loading && threads.length === 0 ? (
+          <ActivityIndicator color="#00ff88" style={{marginTop: 40}} />
+        ) : threads.length === 0 ? (
+          <Text style={c.empty}>No conversations yet</Text>
+        ) : (
+          <FlatList
+            data={threads}
+            keyExtractor={t => t.user}
+            contentContainerStyle={{padding: 10, gap: 6}}
+            renderItem={({item}) => (
+              <TouchableOpacity style={dm.card} onPress={() => setActiveThread(item.user)}>
                 <View style={dm.cardHeader}>
-                  <Text style={dm.label}>
-                    {mine
-                      ? `→ ${item.to.split('@')[0]}`
-                      : `← ${item.from.split('@')[0]}`}
-                  </Text>
-                  <Text style={dm.time}>{fmt(item.ts)}</Text>
+                  <Text style={dm.label}>{item.user}</Text>
+                  <Text style={dm.time}>{fmtShort(item.lastTs)}</Text>
                 </View>
-                <Text style={dm.content}>{item.content}</Text>
+                <View style={{flexDirection: 'row', alignItems: 'center', gap: 8}}>
+                  <Text style={dm.content} numberOfLines={1}>{item.lastMsg}</Text>
+                  {item.unread > 0 && (
+                    <View style={dm.badge}>
+                      <Text style={dm.badgeText}>{item.unread}</Text>
+                    </View>
+                  )}
+                </View>
               </TouchableOpacity>
-            );
-          }}
-        />
-      )}
+            )}
+          />
+        )}
 
-      {/* Compose Modal */}
-      <Modal visible={composeModal} animationType="slide" transparent>
-        <KeyboardAvoidingView
-          style={{flex: 1}}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <View style={m.overlay}>
-            <View style={m.sheet}>
-              <View style={m.sheetHeader}>
-                <Text style={m.sheetTitle}>NEW DM</Text>
-                <TouchableOpacity onPress={() => setComposeModal(false)}>
-                  <Text style={m.closeBtn}>✕</Text>
+        {/* Compose new DM Modal */}
+        <Modal visible={composeModal} animationType="slide" transparent>
+          <KeyboardAvoidingView
+            style={{flex: 1}}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <View style={m.overlay}>
+              <View style={m.sheet}>
+                <View style={m.sheetHeader}>
+                  <Text style={m.sheetTitle}>NEW DM</Text>
+                  <TouchableOpacity onPress={() => setComposeModal(false)}>
+                    <Text style={m.closeBtn}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+                <TextInput
+                  style={m.input}
+                  value={recipient}
+                  onChangeText={setRecipient}
+                  placeholder="Recipient username *"
+                  placeholderTextColor="#333"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <TextInput
+                  style={[m.input, {minHeight: 80, textAlignVertical: 'top'}]}
+                  value={dmInput}
+                  onChangeText={setDmInput}
+                  placeholder="Message *"
+                  placeholderTextColor="#333"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  multiline
+                />
+                <TouchableOpacity style={m.actionBtn} onPress={sendDm}>
+                  <Text style={m.actionBtnText}>SEND</Text>
                 </TouchableOpacity>
               </View>
-              <TextInput
-                style={m.input}
-                value={recipient}
-                onChangeText={setRecipient}
-                placeholder="Recipient email *"
-                placeholderTextColor="#333"
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="email-address"
-              />
-              <TextInput
-                style={[m.input, {minHeight: 80, textAlignVertical: 'top'}]}
-                value={dmInput}
-                onChangeText={setDmInput}
-                placeholder="Message *"
-                placeholderTextColor="#333"
-                autoCapitalize="none"
-                autoCorrect={false}
-                multiline
-              />
-              <TouchableOpacity style={m.actionBtn} onPress={sendDm}>
-                <Text style={m.actionBtnText}>SEND</Text>
-              </TouchableOpacity>
             </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-    </View>
+          </KeyboardAvoidingView>
+        </Modal>
+      </View>
+    );
+  }
+
+  // ── Conversation view ─────────────────────────────────────────────────────
+  const myUsername = myEmail.includes('@') ? myEmail.split('@')[0].toLowerCase() : myEmail.toLowerCase();
+
+  return (
+    <KeyboardAvoidingView
+      style={{flex: 1}}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={90}>
+      {/* Back header */}
+      <View style={sc.header}>
+        <TouchableOpacity onPress={() => { setActiveThread(null); setMessages([]); }}>
+          <Text style={{color: '#00ff88', fontFamily: 'monospace', fontSize: 13}}>← BACK</Text>
+        </TouchableOpacity>
+        <Text style={[sc.title, {flex: 1, textAlign: 'center'}]}>{activeThread}</Text>
+        <View style={{width: 50}} />
+      </View>
+
+      {msgLoading && messages.length === 0 ? (
+        <ActivityIndicator color="#00ff88" style={{marginTop: 40}} />
+      ) : (
+        <ScrollView
+          ref={scrollRef}
+          style={c.msgScroll}
+          contentContainerStyle={{padding: 10, gap: 6}}>
+          {messages.length === 0 && (
+            <Text style={c.empty}>No messages yet</Text>
+          )}
+          {messages.map(msg => {
+            const mine = msg.from === myUsername;
+            return (
+              <View key={msg.id} style={[c.bubble, mine && c.bubbleMine]}>
+                {!mine && <Text style={c.bubbleAuthor}>{msg.from}</Text>}
+                <Text style={[c.bubbleText, mine && c.bubbleTextMine]}>{msg.body}</Text>
+                <Text style={c.bubbleTime}>{fmtShort(msg.ts)}</Text>
+              </View>
+            );
+          })}
+        </ScrollView>
+      )}
+
+      <View style={c.inputRow}>
+        <TextInput
+          style={c.chatInput}
+          value={dmInput}
+          onChangeText={setDmInput}
+          placeholder="Message..."
+          placeholderTextColor="#333"
+          autoCapitalize="none"
+          autoCorrect={false}
+          onSubmitEditing={sendDm}
+          returnKeyType="send"
+        />
+        <TouchableOpacity style={c.sendBtn} onPress={sendDm}>
+          <Text style={c.sendBtnText}>▶</Text>
+        </TouchableOpacity>
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -750,6 +825,16 @@ const dm = StyleSheet.create({
   label: {color: '#005533', fontFamily: 'monospace', fontSize: 11, fontWeight: 'bold'},
   time:  {color: '#333', fontFamily: 'monospace', fontSize: 10},
   content: {color: '#ccc', fontFamily: 'monospace', fontSize: 13},
+  badge: {
+    backgroundColor: '#00ff88',
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  badgeText: {color: '#000', fontFamily: 'monospace', fontSize: 10, fontWeight: 'bold'},
 });
 
 const m = StyleSheet.create({

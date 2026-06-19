@@ -159,8 +159,8 @@ export default function ScriptScreen() {
         headers: cloudHeaders(auth.token, auth.email),
       });
       const j = await r.json();
-      if (j.ok) setCloudScripts(j.scripts ?? []);
-      else setCloudError(j.error || 'Error');
+      if (j.error) setCloudError(j.error);
+      else setCloudScripts(j.scripts ?? []);
     } catch (e: any) {
       setCloudError(e?.message || 'Network error');
     }
