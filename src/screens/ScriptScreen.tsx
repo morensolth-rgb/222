@@ -1,0 +1,657 @@
+import React, {useState, useCallback, useEffect, useRef} from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  ScrollView,
+  Alert,
+  Modal,
+  FlatList,
+  NativeEventEmitter,
+  NativeModules,
+} from 'react-native';
+import {useFocusEffect} from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {rootBridge} from '../native/RootBridge';
+import {LICENSE_SERVER} from './LicenseScreen';
+
+const DEFAULT_SCRIPT = `Java.perform(function() {
+  // Hook a method
+  var Activity = Java.use("android.app.Activity");
+  Activity.onResume.implementation = function() {
+    console.log("[*] onResume called");
+    this.onResume();
+  };
+});`;
+
+const SCRIPTS_KEY = 'scriptsList';
+
+const eventEmitter = new NativeEventEmitter(NativeModules.RootBridge);
+
+type InjectMode = 'pid' | 'name' | 'spawn';
+
+const MODE_INFO: Record<InjectMode, string> = {
+  pid:   'Attach to running process by PID',
+  name:  'Attach by package name (-n)',
+  spawn: 'Spawn fresh + inject before any code runs (-f)',
+};
+
+type SavedScript = {id: string; name: string; code: string};
+
+export default function ScriptScreen() {
+  const [script, setScript] = useState(DEFAULT_SCRIPT);
+  const [target, setTarget] = useState('');
+  const [running, setRunning] = useState(false);
+  const [output, setOutput] = useState<string[]>([]);
+  const [injectMode, setInjectMode] = useState<InjectMode>('pid');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [scriptsModal, setScriptsModal] = useState(false);
+  const [savedScripts, setSavedScripts] = useState<SavedScript[]>([]);
+  const [saveNameModal, setSaveNameModal] = useState(false);
+  const [newScriptName, setNewScriptName] = useState('');
+  const [cloudModal, setCloudModal] = useState(false);
+  const [cloudScripts, setCloudScripts] = useState<{id:number;name:string;code:string}[]>([]);
+  const [cloudLoading, setCloudLoading] = useState(false);
+  const [cloudError, setCloudError] = useState('');
+  const scrollRef = useRef<ScrollView>(null);
+  const listenerRef = useRef<any>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      AsyncStorage.getItem('selectedApp').then(pkg => {
+        if (pkg) setTarget(pkg);
+      });
+      loadScriptsList();
+    }, []),
+  );
+
+  useEffect(() => {
+    return () => {
+      listenerRef.current?.remove();
+    };
+  }, []);
+
+  const loadScriptsList = async () => {
+    try {
+      const raw = await AsyncStorage.getItem(SCRIPTS_KEY);
+      if (raw) setSavedScripts(JSON.parse(raw));
+    } catch (_) {}
+  };
+
+  const saveScriptsList = async (list: SavedScript[]) => {
+    setSavedScripts(list);
+    await AsyncStorage.setItem(SCRIPTS_KEY, JSON.stringify(list));
+  };
+
+  const openSaveModal = () => {
+    setNewScriptName('Script ' + (savedScripts.length + 1));
+    setSaveNameModal(true);
+  };
+
+  const confirmSave = async () => {
+    const name = newScriptName.trim();
+    if (!name) return;
+    const newEntry: SavedScript = {
+      id: Date.now().toString(),
+      name,
+      code: script,
+    };
+    await saveScriptsList([newEntry, ...savedScripts]);
+    setSaveNameModal(false);
+    Alert.alert('Saved', `"${name}" saved`);
+  };
+
+  const loadScript = (item: SavedScript) => {
+    setScript(item.code);
+    setScriptsModal(false);
+  };
+
+  const deleteScript = async (id: string) => {
+    Alert.alert('Delete', 'Delete this script?', [
+      {text: 'Cancel', style: 'cancel'},
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          const updated = savedScripts.filter(s => s.id !== id);
+          await saveScriptsList(updated);
+        },
+      },
+    ]);
+  };
+
+  // ── Cloud Scripts ─────────────────────────────────────────────────────────
+  const getToken = async () => AsyncStorage.getItem('authToken');
+
+  const openCloud = async () => {
+    setCloudModal(true);
+    setCloudError('');
+    setCloudLoading(true);
+    try {
+      const token = await getToken();
+      if (!token) { setCloudError('Not logged in'); setCloudLoading(false); return; }
+      const r = await fetch(LICENSE_SERVER + '/scripts', {
+        headers: { Authorization: 'Bearer ' + token },
+      });
+      const j = await r.json();
+      if (j.ok) setCloudScripts(j.scripts);
+      else setCloudError(j.error || 'Error');
+    } catch (e: any) {
+      setCloudError(e?.message || 'Network error');
+    }
+    setCloudLoading(false);
+  };
+
+  const saveToCloud = async () => {
+    const name = newScriptName.trim();
+    if (!name) return;
+    try {
+      const token = await getToken();
+      if (!token) { Alert.alert('Error', 'Not logged in'); return; }
+      const r = await fetch(LICENSE_SERVER + '/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify({ name, code: script }),
+      });
+      const j = await r.json();
+      if (j.ok) {
+        setSaveNameModal(false);
+        Alert.alert('Saved to Cloud', '"' + name + '" saved to your cloud');
+      } else {
+        Alert.alert('Error', j.error || 'Save failed');
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Network error');
+    }
+  };
+
+  const deleteCloudScript = async (id: number) => {
+    Alert.alert('Delete', 'Delete from cloud?', [
+      {text: 'Cancel', style: 'cancel'},
+      {text: 'Delete', style: 'destructive', onPress: async () => {
+        try {
+          const token = await getToken();
+          await fetch(LICENSE_SERVER + '/scripts/' + id, {
+            method: 'DELETE',
+            headers: { Authorization: 'Bearer ' + token! },
+          });
+          setCloudScripts(prev => prev.filter(s => s.id !== id));
+        } catch (_) {}
+      }},
+    ]);
+  };
+
+  const loadCloudScript = (item: {name:string;code:string}) => {
+    setScript(item.code);
+    setCloudModal(false);
+  };
+
+  const addOut = (msg: string) => {
+    const ts = new Date().toLocaleTimeString();
+    setOutput(prev => [...prev.slice(-300), `[${ts}] ${msg}`]);
+    setTimeout(() => scrollRef.current?.scrollToEnd({animated: false}), 50);
+  };
+
+  const stopScript = async () => {
+    try {
+      await rootBridge.stopScript();
+    } catch (_) {}
+    listenerRef.current?.remove();
+    listenerRef.current = null;
+    setRunning(false);
+    addOut('⏹ Stopped');
+  };
+
+  const runScript = async () => {
+    if (!target) {
+      Alert.alert('No target', 'Go to Apps tab and select a target app first');
+      return;
+    }
+    if (running) return;
+
+    listenerRef.current?.remove();
+
+    listenerRef.current = eventEmitter.addListener('FridaScriptLog', (data: {line: string}) => {
+      addOut(data.line);
+    });
+
+    setRunning(true);
+    setOutput([]);
+    setSearchQuery('');
+    addOut(`▶ Targeting ${target}...`);
+
+    try {
+      const result = await rootBridge.runScript(target, script, injectMode);
+      if (result.startsWith('running:')) {
+        addOut(`✓ Injected — streaming output below`);
+      } else {
+        addOut(result);
+        setRunning(false);
+        listenerRef.current?.remove();
+        listenerRef.current = null;
+      }
+    } catch (e: any) {
+      addOut('✗ ' + (e.message ?? String(e)));
+      setRunning(false);
+      listenerRef.current?.remove();
+      listenerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    const last = output[output.length - 1] ?? '';
+    if (running && (last.includes('frida process exited') || last.includes('⏹'))) {
+      setRunning(false);
+      listenerRef.current?.remove();
+      listenerRef.current = null;
+    }
+  }, [output, running]);
+
+  const filteredOutput = searchQuery.trim()
+    ? output.filter(l => l.toLowerCase().includes(searchQuery.toLowerCase()))
+    : output;
+
+  return (
+    <View style={s.container}>
+      {/* Target bar */}
+      <View style={s.targetBar}>
+        <Text style={s.targetLabel}>TARGET: </Text>
+        <Text style={s.targetPkg} numberOfLines={1}>
+          {target || 'None — select from Apps tab'}
+        </Text>
+        {running && <View style={s.runDot} />}
+      </View>
+
+      {/* Inject mode selector */}
+      <View style={s.modeRow}>
+        {(['pid', 'name', 'spawn'] as InjectMode[]).map(m => (
+          <TouchableOpacity
+            key={m}
+            style={[s.modeBtn, injectMode === m && s.modeBtnActive]}
+            onPress={() => setInjectMode(m)}>
+            <Text style={[s.modeBtnText, injectMode === m && s.modeBtnTextActive]}>
+              {m.toUpperCase()}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      <Text style={s.modeHint}>{MODE_INFO[injectMode]}</Text>
+
+      {/* Script editor */}
+      <TextInput
+        style={s.editor}
+        multiline
+        value={script}
+        onChangeText={setScript}
+        autoCapitalize="none"
+        autoCorrect={false}
+        spellCheck={false}
+        scrollEnabled
+      />
+
+      {/* Buttons */}
+      <View style={s.btnRow}>
+        <TouchableOpacity style={s.btnSave} onPress={openSaveModal}>
+          <Text style={s.btnText}>SAVE</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={s.btnScripts} onPress={() => { loadScriptsList(); setScriptsModal(true); }}>
+          <Text style={s.btnText}>LOCAL ({savedScripts.length})</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={s.btnCloud} onPress={openCloud}>
+          <Text style={s.btnText}>☁ CLOUD</Text>
+        </TouchableOpacity>
+        {running ? (
+          <TouchableOpacity style={s.btnStop} onPress={stopScript}>
+            <Text style={s.btnText}>■ STOP</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity style={s.btnRun} onPress={runScript}>
+            <Text style={s.btnText}>▶ RUN</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* Output */}
+      <View style={s.outputBox}>
+        {/* Output header + search */}
+        <View style={s.outHeader}>
+          <Text style={s.outLabel}>OUTPUT {filteredOutput.length < output.length ? `(${filteredOutput.length}/${output.length})` : `(${output.length})`}</Text>
+          <View style={s.outHeaderRight}>
+            {output.length > 0 && (
+              <TouchableOpacity onPress={() => setOutput([])}>
+                <Text style={s.clearBtn}>CLEAR</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+        {/* Search bar */}
+        <View style={s.searchRow}>
+          <TextInput
+            style={s.searchInput}
+            placeholder="Search output..."
+            placeholderTextColor="#333"
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity style={s.searchClear} onPress={() => setSearchQuery('')}>
+              <Text style={s.searchClearText}>✕</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+        <ScrollView ref={scrollRef} style={s.outScroll}>
+          {filteredOutput.length === 0 ? (
+            <Text style={s.outEmpty}>
+              {searchQuery ? 'No matches' : 'No output yet'}
+            </Text>
+          ) : (
+            filteredOutput.map((l, i) => (
+              <Text key={i} style={[s.outLine, l.includes('✗') && s.outErr]}>
+                {l}
+              </Text>
+            ))
+          )}
+        </ScrollView>
+      </View>
+
+      {/* Scripts Manager Modal */}
+      <Modal visible={scriptsModal} animationType="slide" transparent>
+        <View style={m.overlay}>
+          <View style={m.sheet}>
+            <View style={m.sheetHeader}>
+              <Text style={m.sheetTitle}>SAVED SCRIPTS</Text>
+              <TouchableOpacity onPress={() => setScriptsModal(false)}>
+                <Text style={m.closeBtn}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            {savedScripts.length === 0 ? (
+              <Text style={m.empty}>No saved scripts yet</Text>
+            ) : (
+              <FlatList
+                data={savedScripts}
+                keyExtractor={item => item.id}
+                renderItem={({item}) => (
+                  <View style={m.scriptItem}>
+                    <TouchableOpacity style={m.scriptName} onPress={() => loadScript(item)}>
+                      <Text style={m.scriptNameText} numberOfLines={1}>{item.name}</Text>
+                      <Text style={m.scriptPreview} numberOfLines={1}>
+                        {item.code.replace(/\n/g, ' ').trim()}
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={m.deleteBtn} onPress={() => deleteScript(item.id)}>
+                      <Text style={m.deleteBtnText}>🗑</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              />
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Save Name Modal */}
+      <Modal visible={saveNameModal} animationType="fade" transparent>
+        <View style={m.overlay}>
+          <View style={m.dialog}>
+            <Text style={m.dialogTitle}>SAVE SCRIPT</Text>
+            <TextInput
+              style={m.nameInput}
+              value={newScriptName}
+              onChangeText={setNewScriptName}
+              autoFocus
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholderTextColor="#333"
+              placeholder="Script name..."
+            />
+            <View style={m.dialogBtns}>
+              <TouchableOpacity style={m.dialogCancel} onPress={() => setSaveNameModal(false)}>
+                <Text style={m.dialogCancelText}>CANCEL</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={m.dialogSave} onPress={confirmSave}>
+                <Text style={m.dialogSaveText}>LOCAL</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[m.dialogSave, {backgroundColor: '#003d1a'}]} onPress={saveToCloud}>
+                <Text style={m.dialogSaveText}>☁ CLOUD</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Cloud Scripts Modal */}
+      <Modal visible={cloudModal} animationType="slide" transparent>
+        <View style={m.overlay}>
+          <View style={m.sheet}>
+            <View style={m.header}>
+              <Text style={m.sheetTitle}>☁ CLOUD SCRIPTS</Text>
+              <TouchableOpacity onPress={() => setCloudModal(false)}>
+                <Text style={m.closeBtn}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            {cloudLoading ? (
+              <Text style={m.emptyText}>Loading...</Text>
+            ) : cloudError ? (
+              <Text style={[m.emptyText, {color: '#ff4444'}]}>{cloudError}</Text>
+            ) : cloudScripts.length === 0 ? (
+              <Text style={m.emptyText}>No cloud scripts yet</Text>
+            ) : (
+              <FlatList
+                data={cloudScripts}
+                keyExtractor={item => String(item.id)}
+                renderItem={({item}) => (
+                  <TouchableOpacity style={m.scriptItem} onPress={() => loadCloudScript(item)}>
+                    <View style={{flex: 1}}>
+                      <Text style={m.scriptName}>{item.name}</Text>
+                      <Text style={m.scriptPreview} numberOfLines={1}>{item.code}</Text>
+                    </View>
+                    <TouchableOpacity style={m.deleteBtn} onPress={() => deleteCloudScript(item.id)}>
+                      <Text style={m.deleteBtnText}>✕</Text>
+                    </TouchableOpacity>
+                  </TouchableOpacity>
+                )}
+              />
+            )}
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+const s = StyleSheet.create({
+  container: {flex: 1, backgroundColor: '#0d0d0d', padding: 10, gap: 8},
+  targetBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#111',
+    padding: 8,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#1e1e1e',
+  },
+  targetLabel: {color: '#555', fontFamily: 'monospace', fontSize: 12},
+  targetPkg:   {color: '#00ff88', fontFamily: 'monospace', fontSize: 12, flex: 1},
+  runDot:      {width: 8, height: 8, borderRadius: 4, backgroundColor: '#00ff88'},
+  editor: {
+    backgroundColor: '#080808',
+    borderRadius: 8,
+    padding: 10,
+    color: '#00cc66',
+    fontFamily: 'monospace',
+    fontSize: 12,
+    borderWidth: 1,
+    borderColor: '#1e1e1e',
+    minHeight: 160,
+    maxHeight: 220,
+    textAlignVertical: 'top',
+  },
+  btnRow:    {flexDirection: 'row', gap: 6},
+  btnSave: {
+    flex: 1,
+    backgroundColor: '#111',
+    padding: 10,
+    borderRadius: 6,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#1e1e1e',
+  },
+  btnScripts: {
+    flex: 1.2,
+    backgroundColor: '#0a1a2a',
+    padding: 10,
+    borderRadius: 6,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#005588',
+  },
+  btnCloud: {
+    flex: 1.2,
+    backgroundColor: '#001a0d',
+    padding: 10,
+    borderRadius: 6,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#005533',
+  },
+  btnRun: {
+    flex: 1.6,
+    backgroundColor: '#003d22',
+    padding: 10,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  btnStop: {
+    flex: 1.6,
+    backgroundColor: '#3d0000',
+    padding: 10,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  btnText: {color: '#00ff88', fontFamily: 'monospace', fontWeight: 'bold', fontSize: 11},
+  outputBox: {
+    flex: 1,
+    backgroundColor: '#080808',
+    borderRadius: 8,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#1e1e1e',
+  },
+  outHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  outHeaderRight: {flexDirection: 'row', gap: 10},
+  outLabel:  {color: '#333', fontSize: 10, fontFamily: 'monospace'},
+  clearBtn:  {color: '#333', fontSize: 10, fontFamily: 'monospace'},
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0d0d0d',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#1e1e1e',
+    marginBottom: 6,
+    paddingHorizontal: 8,
+  },
+  searchInput: {
+    flex: 1,
+    color: '#00ff88',
+    fontFamily: 'monospace',
+    fontSize: 11,
+    paddingVertical: 5,
+  },
+  searchClear: {padding: 4},
+  searchClearText: {color: '#555', fontSize: 12},
+  outScroll: {flex: 1},
+  outEmpty:  {color: '#333', fontFamily: 'monospace', fontSize: 11},
+  outLine:   {color: '#00cc44', fontFamily: 'monospace', fontSize: 11, marginBottom: 1},
+  outErr:    {color: '#ff4444'},
+  modeRow: {flexDirection: 'row', gap: 6},
+  modeBtn: {
+    flex: 1, paddingVertical: 7, borderRadius: 6,
+    borderWidth: 1, borderColor: '#1e1e1e',
+    backgroundColor: '#111', alignItems: 'center',
+  },
+  modeBtnActive: {borderColor: '#00ff88', backgroundColor: '#001a0d'},
+  modeBtnText:     {color: '#444', fontFamily: 'monospace', fontSize: 11, fontWeight: 'bold'},
+  modeBtnTextActive: {color: '#00ff88'},
+  modeHint: {color: '#334', fontFamily: 'monospace', fontSize: 10, marginTop: -4},
+});
+
+const m = StyleSheet.create({
+  overlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    backgroundColor: '#0d0d0d',
+    borderTopWidth: 1,
+    borderTopColor: '#1e1e1e',
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+    maxHeight: '75%',
+    padding: 16,
+  },
+  sheetHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  sheetTitle: {color: '#00ff88', fontFamily: 'monospace', fontSize: 13, fontWeight: 'bold'},
+  closeBtn: {color: '#555', fontSize: 18, padding: 4},
+  empty: {color: '#333', fontFamily: 'monospace', fontSize: 12, textAlign: 'center', marginVertical: 30},
+  scriptItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: '#151515',
+    paddingVertical: 10,
+  },
+  scriptName: {flex: 1},
+  scriptNameText: {color: '#ddd', fontFamily: 'monospace', fontSize: 13},
+  scriptPreview: {color: '#333', fontFamily: 'monospace', fontSize: 10, marginTop: 2},
+  deleteBtn: {paddingHorizontal: 12, paddingVertical: 8},
+  deleteBtnText: {fontSize: 16},
+  dialog: {
+    backgroundColor: '#0d0d0d',
+    margin: 30,
+    borderRadius: 12,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#1e1e1e',
+    marginTop: 'auto',
+    marginBottom: 'auto',
+  },
+  dialogTitle: {color: '#00ff88', fontFamily: 'monospace', fontSize: 13, fontWeight: 'bold', marginBottom: 14},
+  nameInput: {
+    backgroundColor: '#080808',
+    borderRadius: 7,
+    padding: 10,
+    color: '#00ff88',
+    fontFamily: 'monospace',
+    fontSize: 13,
+    borderWidth: 1,
+    borderColor: '#1e1e1e',
+    marginBottom: 14,
+  },
+  dialogBtns: {flexDirection: 'row', gap: 10},
+  dialogCancel: {
+    flex: 1, padding: 11, borderRadius: 7,
+    backgroundColor: '#111', borderWidth: 1, borderColor: '#1e1e1e',
+    alignItems: 'center',
+  },
+  dialogCancelText: {color: '#555', fontFamily: 'monospace'},
+  dialogSave: {
+    flex: 1, padding: 11, borderRadius: 7,
+    backgroundColor: '#003d22',
+    alignItems: 'center',
+  },
+  dialogSaveText: {color: '#00ff88', fontFamily: 'monospace', fontWeight: 'bold'},
+});

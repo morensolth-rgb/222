@@ -1,0 +1,10 @@
+node_modules/
+android/.gradle/
+android/build/
+android/app/build/
+android/app/src/main/assets/index.android.bundle
+android/app/src/main/assets/frida-server-arm64
+android/app/src/main/assets/frida-gadget-arm64.so
+android/app/src/main/assets/apktool.jar
+ios/
+.bundle/
