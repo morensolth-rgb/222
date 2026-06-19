@@ -13,6 +13,7 @@ import ScriptScreen      from './src/screens/ScriptScreen';
 import ConsoleScreen     from './src/screens/ConsoleScreen';
 import AnalyzerScreen    from './src/screens/AnalyzerScreen';
 import LicenseScreen, {LICENSE_KEY_STORAGE, LICENSE_SERVER} from './src/screens/LicenseScreen';
+import CommunityScreen from './src/screens/CommunityScreen';
 
 const Tab   = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -155,6 +156,10 @@ export default function App() {
           <Tab.Screen
             name="Analyzer" component={AnalyzerScreen}
             options={{title: 'Analyzer', tabBarIcon: ({color}) => <TabIcon name="🔬" color={color} />}}
+          />
+          <Tab.Screen
+            name="Community" component={CommunityScreen}
+            options={{title: 'Community', tabBarIcon: ({color}) => <TabIcon name="👥" color={color} />}}
           />
         </Tab.Navigator>
       </NavigationContainer>

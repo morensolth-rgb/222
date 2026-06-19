@@ -15,7 +15,9 @@ import {
 import {useFocusEffect} from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {rootBridge} from '../native/RootBridge';
-import {LICENSE_SERVER} from './LicenseScreen';
+import {LICENSE_KEY_STORAGE, LICENSE_EMAIL_STORAGE} from './LicenseScreen';
+
+const COMMUNITY_SERVER = 'https://fridact-6mzysus-preview-4200.runable.site/api';
 
 const DEFAULT_SCRIPT = `Java.perform(function() {
   // Hook a method
@@ -39,6 +41,25 @@ const MODE_INFO: Record<InjectMode, string> = {
 };
 
 type SavedScript = {id: string; name: string; code: string};
+type CloudScript = {id: string; title: string; code: string; author?: string; description?: string};
+
+// ── Auth helpers ──────────────────────────────────────────────────────────────
+const getAuth = async (): Promise<{token: string; email: string} | null> => {
+  const token = await AsyncStorage.getItem(LICENSE_KEY_STORAGE);
+  const email = await AsyncStorage.getItem(LICENSE_EMAIL_STORAGE);
+  if (!token || !email) return null;
+  return {token, email};
+};
+
+const cloudHeaders = (
+  token: string,
+  email: string,
+  json?: boolean,
+): Record<string, string> => ({
+  ...(json ? {'Content-Type': 'application/json'} : {}),
+  Authorization: 'Bearer ' + token,
+  'X-User-Email': email,
+});
 
 export default function ScriptScreen() {
   const [script, setScript] = useState(DEFAULT_SCRIPT);
@@ -52,7 +73,7 @@ export default function ScriptScreen() {
   const [saveNameModal, setSaveNameModal] = useState(false);
   const [newScriptName, setNewScriptName] = useState('');
   const [cloudModal, setCloudModal] = useState(false);
-  const [cloudScripts, setCloudScripts] = useState<{id:number;name:string;code:string}[]>([]);
+  const [cloudScripts, setCloudScripts] = useState<CloudScript[]>([]);
   const [cloudLoading, setCloudLoading] = useState(false);
   const [cloudError, setCloudError] = useState('');
   const scrollRef = useRef<ScrollView>(null);
@@ -123,20 +144,22 @@ export default function ScriptScreen() {
   };
 
   // ── Cloud Scripts ─────────────────────────────────────────────────────────
-  const getToken = async () => AsyncStorage.getItem('authToken');
-
   const openCloud = async () => {
     setCloudModal(true);
     setCloudError('');
     setCloudLoading(true);
     try {
-      const token = await getToken();
-      if (!token) { setCloudError('Not logged in'); setCloudLoading(false); return; }
-      const r = await fetch(LICENSE_SERVER + '/scripts', {
-        headers: { Authorization: 'Bearer ' + token },
+      const auth = await getAuth();
+      if (!auth) {
+        setCloudError('Not logged in — open License tab first');
+        setCloudLoading(false);
+        return;
+      }
+      const r = await fetch(COMMUNITY_SERVER + '/community/scripts?mine=1', {
+        headers: cloudHeaders(auth.token, auth.email),
       });
       const j = await r.json();
-      if (j.ok) setCloudScripts(j.scripts);
+      if (j.ok) setCloudScripts(j.scripts ?? []);
       else setCloudError(j.error || 'Error');
     } catch (e: any) {
       setCloudError(e?.message || 'Network error');
@@ -145,20 +168,23 @@ export default function ScriptScreen() {
   };
 
   const saveToCloud = async () => {
-    const name = newScriptName.trim();
-    if (!name) return;
+    const title = newScriptName.trim();
+    if (!title) return;
     try {
-      const token = await getToken();
-      if (!token) { Alert.alert('Error', 'Not logged in'); return; }
-      const r = await fetch(LICENSE_SERVER + '/scripts', {
+      const auth = await getAuth();
+      if (!auth) {
+        Alert.alert('Error', 'Not logged in — open License tab first');
+        return;
+      }
+      const r = await fetch(COMMUNITY_SERVER + '/community/scripts', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-        body: JSON.stringify({ name, code: script }),
+        headers: cloudHeaders(auth.token, auth.email, true),
+        body: JSON.stringify({title, code: script, description: ''}),
       });
       const j = await r.json();
       if (j.ok) {
         setSaveNameModal(false);
-        Alert.alert('Saved to Cloud', '"' + name + '" saved to your cloud');
+        Alert.alert('Saved to Cloud', `"${title}" saved to your cloud`);
       } else {
         Alert.alert('Error', j.error || 'Save failed');
       }
@@ -167,23 +193,28 @@ export default function ScriptScreen() {
     }
   };
 
-  const deleteCloudScript = async (id: number) => {
+  const deleteCloudScript = async (id: string) => {
     Alert.alert('Delete', 'Delete from cloud?', [
       {text: 'Cancel', style: 'cancel'},
-      {text: 'Delete', style: 'destructive', onPress: async () => {
-        try {
-          const token = await getToken();
-          await fetch(LICENSE_SERVER + '/scripts/' + id, {
-            method: 'DELETE',
-            headers: { Authorization: 'Bearer ' + token! },
-          });
-          setCloudScripts(prev => prev.filter(s => s.id !== id));
-        } catch (_) {}
-      }},
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const auth = await getAuth();
+            if (!auth) return;
+            await fetch(COMMUNITY_SERVER + '/community/scripts/' + id, {
+              method: 'DELETE',
+              headers: cloudHeaders(auth.token, auth.email),
+            });
+            setCloudScripts(prev => prev.filter(s => s.id !== id));
+          } catch (_) {}
+        },
+      },
     ]);
   };
 
-  const loadCloudScript = (item: {name:string;code:string}) => {
+  const loadCloudScript = (item: CloudScript) => {
     setScript(item.code);
     setCloudModal(false);
   };
@@ -315,9 +346,13 @@ export default function ScriptScreen() {
 
       {/* Output */}
       <View style={s.outputBox}>
-        {/* Output header + search */}
         <View style={s.outHeader}>
-          <Text style={s.outLabel}>OUTPUT {filteredOutput.length < output.length ? `(${filteredOutput.length}/${output.length})` : `(${output.length})`}</Text>
+          <Text style={s.outLabel}>
+            OUTPUT{' '}
+            {filteredOutput.length < output.length
+              ? `(${filteredOutput.length}/${output.length})`
+              : `(${output.length})`}
+          </Text>
           <View style={s.outHeaderRight}>
             {output.length > 0 && (
               <TouchableOpacity onPress={() => setOutput([])}>
@@ -326,7 +361,6 @@ export default function ScriptScreen() {
             )}
           </View>
         </View>
-        {/* Search bar */}
         <View style={s.searchRow}>
           <TextInput
             style={s.searchInput}
@@ -376,7 +410,7 @@ export default function ScriptScreen() {
                 keyExtractor={item => item.id}
                 renderItem={({item}) => (
                   <View style={m.scriptItem}>
-                    <TouchableOpacity style={m.scriptName} onPress={() => loadScript(item)}>
+                    <TouchableOpacity style={m.scriptNameBox} onPress={() => loadScript(item)}>
                       <Text style={m.scriptNameText} numberOfLines={1}>{item.name}</Text>
                       <Text style={m.scriptPreview} numberOfLines={1}>
                         {item.code.replace(/\n/g, ' ').trim()}
@@ -427,7 +461,7 @@ export default function ScriptScreen() {
       <Modal visible={cloudModal} animationType="slide" transparent>
         <View style={m.overlay}>
           <View style={m.sheet}>
-            <View style={m.header}>
+            <View style={m.sheetHeader}>
               <Text style={m.sheetTitle}>☁ CLOUD SCRIPTS</Text>
               <TouchableOpacity onPress={() => setCloudModal(false)}>
                 <Text style={m.closeBtn}>✕</Text>
@@ -442,11 +476,14 @@ export default function ScriptScreen() {
             ) : (
               <FlatList
                 data={cloudScripts}
-                keyExtractor={item => String(item.id)}
+                keyExtractor={item => item.id}
                 renderItem={({item}) => (
                   <TouchableOpacity style={m.scriptItem} onPress={() => loadCloudScript(item)}>
                     <View style={{flex: 1}}>
-                      <Text style={m.scriptName}>{item.name}</Text>
+                      <Text style={m.scriptNameText} numberOfLines={1}>{item.title}</Text>
+                      {item.author ? (
+                        <Text style={m.scriptAuthor}>by {item.author}</Text>
+                      ) : null}
                       <Text style={m.scriptPreview} numberOfLines={1}>{item.code}</Text>
                     </View>
                     <TouchableOpacity style={m.deleteBtn} onPress={() => deleteCloudScript(item.id)}>
@@ -607,6 +644,7 @@ const m = StyleSheet.create({
   sheetTitle: {color: '#00ff88', fontFamily: 'monospace', fontSize: 13, fontWeight: 'bold'},
   closeBtn: {color: '#555', fontSize: 18, padding: 4},
   empty: {color: '#333', fontFamily: 'monospace', fontSize: 12, textAlign: 'center', marginVertical: 30},
+  emptyText: {color: '#333', fontFamily: 'monospace', fontSize: 12, textAlign: 'center', marginVertical: 30},
   scriptItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -614,8 +652,9 @@ const m = StyleSheet.create({
     borderBottomColor: '#151515',
     paddingVertical: 10,
   },
-  scriptName: {flex: 1},
+  scriptNameBox: {flex: 1},
   scriptNameText: {color: '#ddd', fontFamily: 'monospace', fontSize: 13},
+  scriptAuthor: {color: '#005533', fontFamily: 'monospace', fontSize: 10, marginTop: 1},
   scriptPreview: {color: '#333', fontFamily: 'monospace', fontSize: 10, marginTop: 2},
   deleteBtn: {paddingHorizontal: 12, paddingVertical: 8},
   deleteBtnText: {fontSize: 16},
@@ -654,4 +693,10 @@ const m = StyleSheet.create({
     alignItems: 'center',
   },
   dialogSaveText: {color: '#00ff88', fontFamily: 'monospace', fontWeight: 'bold'},
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
 });
