@@ -358,15 +358,7 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                     if (pkg.isBlank()) continue
                     try {
                         val appInfo = pm.getApplicationInfo(pkg, 0)
-                        // Try launch intent label first (matches what user sees on launcher)
-                        val appName = try {
-                            val intent = pm.getLaunchIntentForPackage(pkg)
-                            val act = if (intent != null) pm.resolveActivity(intent, 0) else null
-                            act?.loadLabel(pm)?.toString()?.takeIf { it.isNotBlank() }
-                                ?: pm.getApplicationLabel(appInfo).toString()
-                        } catch (_: Exception) {
-                            pm.getApplicationLabel(appInfo).toString()
-                        }
+                        val appName = pm.getApplicationLabel(appInfo).toString()
                         val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
                                     && (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0
                                     && !thirdParty.contains(pkg)
@@ -377,22 +369,13 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                         map.putBoolean("isSystemApp", isSystem)
                         arr.pushMap(map)
                     } catch (_: Exception) {
-                        // PM can't resolve — read APK directly via pm path
+                        // PM can't resolve it but it exists in /data/data
+                        // Show it anyway with raw package name
                         if (pkg.count { it == '.' } >= 1) {
-                            val label = try {
-                                val apkPath = Shell.cmd("pm path $pkg 2>/dev/null").exec().out
-                                    .firstOrNull { it.startsWith("package:") }
-                                    ?.removePrefix("package:")?.trim()
-                                if (apkPath != null) {
-                                    readLabelFromApk(apkPath) ?: smartFallbackName(pkg)
-                                } else {
-                                    smartFallbackName(pkg)
-                                }
-                            } catch (_: Exception) { smartFallbackName(pkg) }
-
                             val map = WritableNativeMap()
                             map.putString("packageName", pkg)
-                            map.putString("appName", label)
+                            map.putString("appName", pkg.split(".").last()
+                                .replaceFirstChar { it.uppercase() })
                             map.putBoolean("isSystemApp", !thirdParty.contains(pkg))
                             arr.pushMap(map)
                         }
@@ -404,56 +387,6 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                 promise.reject("APPS_ERROR", e.message)
             }
         }.start()
-    }
-
-    // ─────────────────────────────────────────────
-    // readLabelFromApk — extract app_name from strings.xml inside APK
-    // Uses unzip + grep — works on any rooted device without aapt
-    // ─────────────────────────────────────────────
-    private fun readLabelFromApk(apkPath: String): String? {
-        return try {
-            // Extract res/values/strings.xml (or localized variant) and grep for app_name
-            // strings.xml is plain text inside the APK zip
-            val result = Shell.cmd(
-                "unzip -p '$apkPath' res/values/strings.xml 2>/dev/null | grep -o 'name=\"app_name\">[^<]*' | head -1"
-            ).exec().out.firstOrNull()?.trim()
-
-            val name = result?.substringAfter(">")?.trim()?.takeIf { it.isNotBlank() && it.length > 1 }
-
-            // Fallback: try other common string keys
-            if (name != null) return name
-
-            val fallbackKeys = listOf("app_name", "application_name", "title", "game_name", "APP_NAME")
-            for (key in fallbackKeys) {
-                val r = Shell.cmd(
-                    "unzip -p '$apkPath' res/values/strings.xml 2>/dev/null | grep -o 'name=\"$key\">[^<]*' | head -1"
-                ).exec().out.firstOrNull()?.substringAfter(">")?.trim()
-                if (!r.isNullOrBlank() && r.length > 1) return r
-            }
-            null
-        } catch (_: Exception) { null }
-    }
-
-    // ─────────────────────────────────────────────
-    // smartFallbackName — pick the most meaningful segment from a package name
-    // avoids generic words like "game", "app", "android", "mobile", "puzzle", etc.
-    // e.g. games.burny.associations.word.puzzle → "Associations"
-    // ─────────────────────────────────────────────
-    private fun smartFallbackName(pkg: String): String {
-        val noise = setOf(
-            "com", "org", "net", "io", "co", "app", "apps", "game", "games",
-            "android", "mobile", "studio", "studios", "interactive", "entertainment",
-            "puzzle", "word", "color", "sort", "match", "idle", "tycoon", "clicker",
-            "free", "lite", "pro", "hd", "plus", "official", "inc", "llc", "ltd",
-            "software", "digital", "media", "tech", "group", "labs", "dev", "team"
-        )
-        val parts = pkg.split(".")
-        // Pick longest non-noise segment — most likely the actual app name
-        val best = parts
-            .filter { it.length > 2 && !noise.contains(it.lowercase()) }
-            .maxByOrNull { it.length }
-            ?: parts.last()
-        return best.replaceFirstChar { it.uppercase() }
     }
 
     // ─────────────────────────────────────────────
