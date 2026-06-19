@@ -74,7 +74,8 @@ const apiGet = async (path: string): Promise<any> => {
   const auth = await getAuth();
   if (!auth) throw new Error('Not logged in');
   const r = await fetch(API + path, {headers: makeHeaders(auth.token, auth.email)});
-  return r.json();
+  const text = await r.text();
+  try { return JSON.parse(text); } catch { throw new Error(text.slice(0, 120)); }
 };
 
 const apiPost = async (path: string, body: object): Promise<any> => {
@@ -85,7 +86,8 @@ const apiPost = async (path: string, body: object): Promise<any> => {
     headers: makeHeaders(auth.token, auth.email, true),
     body: JSON.stringify(body),
   });
-  return r.json();
+  const text = await r.text();
+  try { return JSON.parse(text); } catch { throw new Error(text.slice(0, 120)); }
 };
 
 const apiDelete = async (path: string): Promise<any> => {
@@ -95,7 +97,8 @@ const apiDelete = async (path: string): Promise<any> => {
     method: 'DELETE',
     headers: makeHeaders(auth.token, auth.email),
   });
-  return r.json();
+  const text = await r.text();
+  try { return JSON.parse(text); } catch { throw new Error(text.slice(0, 120)); }
 };
 
 // ── Chat Tab ──────────────────────────────────────────────────────────────────
@@ -217,6 +220,8 @@ function ScriptsTab() {
   const [scripts, setScripts] = useState<Script[]>([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Script | null>(null);
+  const [dmTarget, setDmTarget] = useState('');
+  const [sendDmModal, setSendDmModal] = useState(false);
   const [shareModal, setShareModal] = useState(false);
   const [shareTitle, setShareTitle] = useState('');
   const [shareDesc, setShareDesc] = useState('');
@@ -264,7 +269,7 @@ function ScriptsTab() {
         title,
         description: shareDesc.trim(),
         code,
-        tags: '[]',
+        tags: [],
       });
       if (j.ok) {
         setShareModal(false);
@@ -296,6 +301,25 @@ function ScriptsTab() {
   };
 
   const fmt = (ts: number) => new Date(ts).toLocaleDateString();
+
+  const sendScriptViaDm = async () => {
+    const to = dmTarget.trim();
+    if (!to || !selected) return;
+    const body = `📜 Script: ${selected.title}\n\n\`\`\`\n${selected.code}\n\`\`\``;
+    try {
+      const j = await apiPost('/community/dm/' + encodeURIComponent(to), {body});
+      if (j.ok) {
+        setSendDmModal(false);
+        setDmTarget('');
+        setSelected(null);
+        Alert.alert('Sent!', `Script sent to ${to}`);
+      } else {
+        Alert.alert('Error', j.error || 'Send failed');
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Network error');
+    }
+  };
 
   return (
     <View style={{flex: 1}}>
@@ -365,8 +389,45 @@ function ScriptsTab() {
             <ScrollView style={m.codeScroll}>
               <Text style={m.code}>{selected?.code}</Text>
             </ScrollView>
+            <TouchableOpacity
+              style={[m.actionBtn, {marginTop: 12}]}
+              onPress={() => setSendDmModal(true)}>
+              <Text style={m.actionBtnText}>✉ SEND VIA DM</Text>
+            </TouchableOpacity>
           </View>
         </View>
+      </Modal>
+
+      {/* Send via DM Modal */}
+      <Modal visible={sendDmModal} animationType="fade" transparent>
+        <KeyboardAvoidingView
+          style={{flex: 1}}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={m.overlay}>
+            <View style={m.sheet}>
+              <View style={m.sheetHeader}>
+                <Text style={m.sheetTitle}>✉ SEND SCRIPT VIA DM</Text>
+                <TouchableOpacity onPress={() => { setSendDmModal(false); setDmTarget(''); }}>
+                  <Text style={m.closeBtn}>✕</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={m.meta}>Script: {selected?.title}</Text>
+              <TextInput
+                style={[m.input, {marginTop: 12}]}
+                value={dmTarget}
+                onChangeText={setDmTarget}
+                placeholder="Recipient username *"
+                placeholderTextColor="#333"
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoFocus
+              />
+              <TouchableOpacity style={m.actionBtn} onPress={sendScriptViaDm}>
+                <Text style={m.actionBtnText}>SEND</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Share Modal */}
@@ -433,6 +494,12 @@ function DMsTab() {
   const [recipient, setRecipient] = useState('');
   const [dmInput, setDmInput]     = useState('');
   const [myEmail, setMyEmail]     = useState('');
+  // Script picker state
+  const [scriptPickerModal, setScriptPickerModal] = useState(false);
+  const [cloudScripts, setCloudScripts]   = useState<Script[]>([]);
+  const [localScripts, setLocalScripts]   = useState<{id:string;name:string;code:string}[]>([]);
+  const [scriptTab, setScriptTab]         = useState<'cloud'|'local'>('cloud');
+  const [scriptLoading, setScriptLoading] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const pollRef   = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -470,6 +537,36 @@ function DMsTab() {
       }
     } catch (_) {}
     setMsgLoading(false);
+  };
+
+  const openScriptPicker = async () => {
+    setScriptPickerModal(true);
+    setScriptLoading(true);
+    try {
+      // Load cloud scripts
+      const j = await apiGet('/community/scripts?mine=1');
+      if (Array.isArray(j.scripts)) setCloudScripts(j.scripts);
+      // Load local scripts from AsyncStorage
+      const raw = await AsyncStorage.getItem('scriptsList');
+      if (raw) setLocalScripts(JSON.parse(raw));
+    } catch (_) {}
+    setScriptLoading(false);
+  };
+
+  const sendScriptInConvo = async (code: string, title: string) => {
+    if (!activeThread) return;
+    const body = `📜 Script: ${title}\n\n\`\`\`\n${code}\n\`\`\``;
+    try {
+      const j = await apiPost('/community/dm/' + encodeURIComponent(activeThread), {body});
+      if (j.ok) {
+        setScriptPickerModal(false);
+        loadConvo(activeThread);
+      } else {
+        Alert.alert('Error', j.error || 'Send failed');
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Network error');
+    }
   };
 
   const sendDm = async () => {
@@ -623,6 +720,9 @@ function DMsTab() {
       )}
 
       <View style={c.inputRow}>
+        <TouchableOpacity style={c.attachBtn} onPress={openScriptPicker}>
+          <Text style={c.attachBtnText}>📎</Text>
+        </TouchableOpacity>
         <TextInput
           style={c.chatInput}
           value={dmInput}
@@ -638,6 +738,54 @@ function DMsTab() {
           <Text style={c.sendBtnText}>▶</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Script Picker Modal */}
+      <Modal visible={scriptPickerModal} animationType="slide" transparent>
+        <View style={m.overlay}>
+          <View style={m.sheet}>
+            <View style={m.sheetHeader}>
+              <Text style={m.sheetTitle}>📎 SEND A SCRIPT</Text>
+              <TouchableOpacity onPress={() => setScriptPickerModal(false)}>
+                <Text style={m.closeBtn}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            {/* Cloud / Local tab */}
+            <View style={{flexDirection: 'row', gap: 8, marginBottom: 12}}>
+              {(['cloud', 'local'] as const).map(t => (
+                <TouchableOpacity
+                  key={t}
+                  style={[sc.shareBtn, scriptTab === t && {backgroundColor: '#005533'}]}
+                  onPress={() => setScriptTab(t)}>
+                  <Text style={sc.shareBtnText}>{t === 'cloud' ? '☁ CLOUD' : '💾 LOCAL'}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {scriptLoading ? (
+              <ActivityIndicator color="#00ff88" style={{marginTop: 20}} />
+            ) : (
+              <FlatList
+                data={scriptTab === 'cloud' ? cloudScripts : localScripts}
+                keyExtractor={item => item.id}
+                style={{maxHeight: 300}}
+                ListEmptyComponent={<Text style={m.meta}>No scripts found</Text>}
+                renderItem={({item}) => (
+                  <TouchableOpacity
+                    style={sc.card}
+                    onPress={() => sendScriptInConvo(
+                      item.code,
+                      (item as any).title ?? (item as any).name,
+                    )}>
+                    <Text style={sc.cardTitle} numberOfLines={1}>
+                      {(item as any).title ?? (item as any).name}
+                    </Text>
+                    <Text style={sc.cardCode} numberOfLines={1}>{item.code}</Text>
+                  </TouchableOpacity>
+                )}
+              />
+            )}
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -743,6 +891,16 @@ const c = StyleSheet.create({
     alignItems: 'center',
   },
   sendBtnText: {color: '#00ff88', fontFamily: 'monospace', fontSize: 16, fontWeight: 'bold'},
+  attachBtn: {
+    backgroundColor: '#111',
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#1e1e1e',
+  },
+  attachBtnText: {fontSize: 18},
   empty: {
     color: '#333',
     fontFamily: 'monospace',
