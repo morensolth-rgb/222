@@ -397,15 +397,21 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
     // via FridaScriptLog events until process exits / stopScript()
     // ─────────────────────────────────────────────
 
-    // The live frida process — killed by stopScript
+    // The live frida-inject process — killed on stopScript
     @Volatile private var fridaProcess: Process? = null
-    // Legacy compat alias (tail loop uses this to know if we're running)
+    // The persistent logcat process — keeps running until stopScript() is called
+    // This is intentional: frida-inject exits after attach, but console.log keeps
+    // flowing to logcat for as long as the game/app is alive.
+    @Volatile private var fridaLogcatProc: Process? = null
+    // Legacy signal flag (used by errLog tail thread)
     @Volatile private var fridaScriptPid: String? = null
 
     @ReactMethod
     fun stopScript(promise: Promise) {
         Thread {
-            fridaScriptPid = null          // signal logcat + loops to stop
+            fridaScriptPid = null
+
+            // Kill frida-inject process
             fridaProcess?.let { p ->
                 try {
                     p.outputStream?.let { os ->
@@ -416,8 +422,12 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                 } catch (_: Exception) {}
             }
             fridaProcess = null
-            // Kill any lingering logcat or frida-inject processes
+
+            // Kill the persistent logcat — user explicitly stopped
+            try { fridaLogcatProc?.destroy() } catch (_: Exception) {}
+            fridaLogcatProc = null
             try { Shell.cmd("pkill -f 'logcat.*Frida' 2>/dev/null; true").exec() } catch (_: Exception) {}
+
             emitScriptLog("⏹ Script stopped")
             promise.resolve("stopped")
         }.start()
@@ -633,41 +643,40 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
 
         var promiseResolved = false
 
-        // ── Stream logcat for frida output (console.log goes to logcat, not stdout) ──
+        // ── Persistent logcat stream — runs until stopScript() is called ──────────────
+        // IMPORTANT: frida-inject exits immediately after attaching and loading the script.
+        // The script itself lives inside the game process and keeps logging via console.log
+        // → logcat. So we MUST keep logcat running indefinitely (not tied to frida-inject
+        // lifetime) — it only stops when the user presses STOP.
+        try { fridaLogcatProc?.destroy() } catch (_: Exception) {}  // kill any previous logcat
         val logcatProc = try {
-            ProcessBuilder("su", "-c", "logcat -c && logcat -s Frida:V *:S 2>/dev/null")
+            // Clear stale logcat buffer first, then stream Frida tag continuously
+            ProcessBuilder("su", "-c", "logcat -c 2>/dev/null; logcat -s Frida:V 2>/dev/null")
                 .redirectErrorStream(true)
                 .start()
+                .also { fridaLogcatProc = it }
         } catch (_: Exception) { null }
 
         if (logcatProc != null) {
-            emitScriptLog("📡 Starting logcat stream (frida)...")
+            emitScriptLog("📡 Logcat streaming (runs until you press STOP)...")
             Thread {
                 try {
                     logcatProc.inputStream.bufferedReader().use { reader ->
                         var line: String?
-                        // Keep streaming even after fridaScriptPid clears — drain for 3 extra seconds
-                        // so we don't miss output that arrives just after the process exits
-                        var drainUntil = Long.MAX_VALUE
+                        // Loop forever — only exits when logcatProc is destroyed (by stopScript)
+                        // or when the stream ends naturally (device killed logcat)
                         while (true) {
-                            // Once process signals done, give 3s extra drain window
-                            if (fridaScriptPid == null && drainUntil == Long.MAX_VALUE) {
-                                drainUntil = System.currentTimeMillis() + 3000
-                            }
-                            if (drainUntil != Long.MAX_VALUE && System.currentTimeMillis() > drainUntil) break
-
                             line = reader.readLine() ?: break
                             if (line.isBlank()) continue
-                            // Strip logcat timestamp/tag prefix for cleaner output
-                            // Format: "MM-DD HH:MM:SS.mmm PID TID TAG: message"
-                            val msg = line.substringAfter("Frida  : ", line)
-                                         .substringAfter("Frida: ", line)
-                                         .let { if (it == line) line else it }
+                            // Extract just the message part — strip logcat header
+                            // Format: "MM-DD HH:MM:SS.mmm  PID  TID Frida: <message>"
+                            val msg = Regex("""^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+\w+\s+Frida\s*:\s*""")
+                                .replace(line, "")
+                                .ifBlank { line }
                             emitScriptLog(msg)
                         }
                     }
                 } catch (_: Exception) {}
-                try { logcatProc.destroy() } catch (_: Exception) {}
                 emitScriptLog("📡 Logcat stopped")
             }.start()
         }
@@ -768,8 +777,9 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                 else emitScriptLog("⚠ exit $realExit")
             }
 
-            fridaScriptPid = null   // signal logcat thread to stop
-            try { logcatProc?.destroy() } catch (_: Exception) {}
+            fridaScriptPid = null
+            // NOTE: do NOT destroy logcatProc here — it keeps running until stopScript()
+            // because the injected script inside the game process is still alive and logging
             fridaProcess   = null
         }.start()
 

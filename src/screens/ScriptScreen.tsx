@@ -272,9 +272,13 @@ export default function ScriptScreen() {
     try {
       const result = await rootBridge.runScript(target, script, injectMode);
       if (result.startsWith('running:')) {
-        addOut(`✓ Injected — streaming output below`);
+        // frida-inject attached successfully — listener stays alive so logcat
+        // output keeps flowing even after frida-inject itself has exited.
+        // running stays true; user must press STOP to end the session.
+        addOut(`✓ Injected — logcat streaming (press STOP to end)`);
       } else {
         addOut(result);
+        // Non-streaming result — clean up immediately
         setRunning(false);
         listenerRef.current?.remove();
         listenerRef.current = null;
@@ -288,8 +292,10 @@ export default function ScriptScreen() {
   };
 
   useEffect(() => {
+    // Only auto-stop if the session was explicitly ended (⏹) or logcat stopped
+    // Do NOT auto-stop on frida-inject exit — script is still running in the game
     const last = output[output.length - 1] ?? '';
-    if (running && (last.includes('frida process exited') || last.includes('⏹'))) {
+    if (running && last.includes('⏹ Script stopped')) {
       setRunning(false);
       listenerRef.current?.remove();
       listenerRef.current = null;
@@ -308,7 +314,12 @@ export default function ScriptScreen() {
         <Text style={s.targetPkg} numberOfLines={1}>
           {target || 'None — select from Apps tab'}
         </Text>
-        {running && <View style={s.runDot} />}
+        {running && (
+          <>
+            <View style={s.runDot} />
+            <Text style={s.logcatBadge}>📡 LIVE</Text>
+          </>
+        )}
       </View>
 
       {/* Inject mode selector */}
@@ -543,6 +554,7 @@ const s = StyleSheet.create({
   targetLabel: {color: '#555', fontFamily: 'monospace', fontSize: 12},
   targetPkg:   {color: '#00ff88', fontFamily: 'monospace', fontSize: 12, flex: 1},
   runDot:      {width: 8, height: 8, borderRadius: 4, backgroundColor: '#00ff88'},
+  logcatBadge: {color: '#00ff88', fontSize: 9, fontFamily: 'monospace', marginLeft: 6, opacity: 0.8},
   editor: {
     backgroundColor: '#080808',
     borderRadius: 8,
