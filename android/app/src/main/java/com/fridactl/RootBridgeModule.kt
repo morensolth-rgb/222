@@ -681,9 +681,8 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                     .redirectErrorStream(true).start()
                 try {
                     tailProc.inputStream.bufferedReader().use { r ->
-                        var l: String?
                         while (fridaScriptPid != null || proc.isAlive) {
-                            l = r.readLine() ?: break
+                            val l = r.readLine() ?: break
                             if (l.isBlank()) continue
                             if (l.startsWith("EXIT:")) continue
                             if (noiseRx.containsMatchIn(l)) continue
@@ -702,9 +701,8 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                     .redirectErrorStream(true).start()
                 try {
                     tailProc.inputStream.bufferedReader().use { r ->
-                        var l: String?
                         while (fridaScriptPid != null || proc.isAlive) {
-                            l = r.readLine() ?: break
+                            val l = r.readLine() ?: break
                             if (l.isBlank() || noiseRx.containsMatchIn(l)) continue
                             emitScriptLog("- $l")
                         }
