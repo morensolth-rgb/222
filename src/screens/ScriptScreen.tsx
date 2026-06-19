@@ -12,6 +12,8 @@ import {
   NativeEventEmitter,
   NativeModules,
   Clipboard,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import {useFocusEffect} from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -80,6 +82,25 @@ export default function ScriptScreen() {
   const [overlayActive, setOverlayActive] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const listenerRef = useRef<any>(null);
+  const runningRef = useRef(false);  // mirror of `running` accessible in AppState callback
+
+  // ── Flush buffered logs when app comes back to foreground ─────────────────
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', async (state: AppStateStatus) => {
+      if (state === 'active' && runningRef.current) {
+        try {
+          const lines: string[] = await rootBridge.flushPendingLogs();
+          if (lines.length > 0) {
+            setOutput(prev => {
+              const next = [...prev, ...lines];
+              return next.slice(-2000); // cap at 2000 lines
+            });
+          }
+        } catch (_) {}
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -233,6 +254,7 @@ export default function ScriptScreen() {
     } catch (_) {}
     listenerRef.current?.remove();
     listenerRef.current = null;
+    runningRef.current = false;
     setRunning(false);
     addOut('⏹ Stopped');
   };
@@ -265,6 +287,7 @@ export default function ScriptScreen() {
     });
 
     setRunning(true);
+    runningRef.current = true;
     setOutput([]);
     setSearchQuery('');
     addOut(`▶ Targeting ${target}...`);
@@ -279,12 +302,14 @@ export default function ScriptScreen() {
       } else {
         addOut(result);
         // Non-streaming result — clean up immediately
+        runningRef.current = false;
         setRunning(false);
         listenerRef.current?.remove();
         listenerRef.current = null;
       }
     } catch (e: any) {
       addOut('✗ ' + (e.message ?? String(e)));
+      runningRef.current = false;
       setRunning(false);
       listenerRef.current?.remove();
       listenerRef.current = null;
@@ -292,10 +317,9 @@ export default function ScriptScreen() {
   };
 
   useEffect(() => {
-    // Only auto-stop if the session was explicitly ended (⏹) or logcat stopped
-    // Do NOT auto-stop on frida-inject exit — script is still running in the game
     const last = output[output.length - 1] ?? '';
     if (running && last.includes('⏹ Script stopped')) {
+      runningRef.current = false;
       setRunning(false);
       listenerRef.current?.remove();
       listenerRef.current = null;

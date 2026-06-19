@@ -31,8 +31,9 @@ export const rootBridge = {
   readDir:               (path: string): Promise<FileEntry[]>  => RootBridge.readDir(path),
   readFile:              (path: string): Promise<string>       => RootBridge.readFile(path),
   writeFile:             (path: string, content: string): Promise<string> => RootBridge.writeFile(path, content),
-  showFloatingLog:       (): Promise<string> => RootBridge.showFloatingLog(),
-  hideFloatingLog:       (): Promise<void>   => RootBridge.hideFloatingLog(),
+  showFloatingLog:       (): Promise<string>   => RootBridge.showFloatingLog(),
+  hideFloatingLog:       (): Promise<void>     => RootBridge.hideFloatingLog(),
+  flushPendingLogs:      (): Promise<string[]> => RootBridge.flushPendingLogs(),
 };
 
 export const repackBridge = {

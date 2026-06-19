@@ -871,18 +871,57 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
         return false
     }
 
+    // ── Background log buffer ─────────────────────────────────────────────────
+    // When the app is in the background, hasActiveCatalystInstance() returns false
+    // and events are silently dropped. We buffer them here and flush when JS calls
+    // flushPendingLogs() (triggered by AppState 'active' event on the JS side).
+    private val pendingLogs = ArrayDeque<String>()
+    private val pendingLogsLock = Any()
+    private val MAX_PENDING = 2000   // keep last 2000 lines max
+
+    @ReactMethod
+    fun flushPendingLogs(promise: Promise) {
+        val lines = synchronized(pendingLogsLock) {
+            val copy = pendingLogs.toList()
+            pendingLogs.clear()
+            copy
+        }
+        val arr = Arguments.createArray()
+        lines.forEach { arr.pushString(it) }
+        promise.resolve(arr)
+    }
+
     private fun emitScriptLog(line: String) {
         try {
-            // 1. Push to React Native JS layer
+            // 2. Push to FloatingLogService overlay (always works, even in background)
+            FloatingLogService.pushLog(line)
+
+            // 1. Push to React Native JS layer — buffer if app is in background
             if (reactApplicationContext.hasActiveCatalystInstance()) {
+                // App is in foreground — flush any buffered lines first, then emit live
+                val pending = synchronized(pendingLogsLock) {
+                    val copy = pendingLogs.toList()
+                    pendingLogs.clear()
+                    copy
+                }
+                pending.forEach { buffered ->
+                    val p = Arguments.createMap(); p.putString("line", buffered)
+                    reactApplicationContext
+                        .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                        ?.emit("FridaScriptLog", p)
+                }
                 val params = Arguments.createMap()
                 params.putString("line", line)
                 reactApplicationContext
                     .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
                     ?.emit("FridaScriptLog", params)
+            } else {
+                // App in background — buffer the line
+                synchronized(pendingLogsLock) {
+                    if (pendingLogs.size >= MAX_PENDING) pendingLogs.removeFirst()
+                    pendingLogs.addLast(line)
+                }
             }
-            // 2. Push to FloatingLogService overlay (works even when app is in background)
-            FloatingLogService.pushLog(line)
         } catch (_: Exception) {}
     }
 
