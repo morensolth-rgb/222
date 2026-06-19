@@ -440,6 +440,20 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                 }
                 Shell.cmd("chmod 755 $FRIDA_CLI_DEST").exec()
 
+                // ── 1c. Version mismatch check ────────────────────────────────
+                // exit 4 is most commonly caused by frida-inject ≠ frida-server version
+                // Check and warn early so the user knows immediately
+                val injectVer = Shell.cmd("$FRIDA_CLI_DEST --version 2>/dev/null").exec()
+                    .out.firstOrNull()?.trim()
+                val serverVer = Shell.cmd("$FRIDA_DEST --version 2>/dev/null").exec()
+                    .out.firstOrNull()?.trim()
+                if (injectVer != null) emitScriptLog("🔧 frida-inject: $injectVer")
+                if (serverVer  != null) emitScriptLog("🔧 frida-server: $serverVer")
+                if (injectVer != null && serverVer != null && injectVer != serverVer) {
+                    emitScriptLog("⚠ VERSION MISMATCH: frida-inject=$injectVer ≠ frida-server=$serverVer")
+                    emitScriptLog("⚠ This WILL cause exit 4. Re-download both from the same release on Home screen.")
+                }
+
                 // ── 1b. Disable ptrace restrictions ───────────────────────────
                 // "Unable to perform ptrace cont: I/O error" = kernel blocks ptrace
                 // Fix: set ptrace_scope=0 and set SELinux to permissive
@@ -510,22 +524,40 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                         Shell.cmd("am force-stop '$packageName' 2>/dev/null; true").exec()
                         Thread.sleep(1500)  // wait for app to fully die before spawning
                         emitScriptLog("🔄 Force-stopped $packageName, spawning via server...")
-                        // -D local routes through frida-server (required on Android 10+)
-                        cmd = "$FRIDA_CLI_DEST -D local -f '$packageName' --script '$scriptPath'"
+                        // Use frida-server directly via frida CLI: frida -D local -f <pkg>
+                        // frida-inject -f on Android 10+ fails with SELinux even with -D local
+                        // Correct approach: write script to stdin of frida CLI or use --no-pause
+                        cmd = "$FRIDA_CLI_DEST -D local -f '$packageName' --script '$scriptPath' --no-pause"
                         modeLabel = "spawn (via server)"
                     }
                     "name" -> {
-                        // Attach by name — needs frida-server
-                        emitScriptLog("⚙ PID/NAME mode requires frida-server...")
+                        // Attach by name — resolve REAL process name from ps, not package name
+                        // frida-inject -n expects the process name (comm), not the package name
+                        // e.g. com.game.foo → process name is often "game.foo" or "com.game.foo"
+                        emitScriptLog("⚙ Name mode — resolving process name...")
                         if (!ensureFridaServer()) {
                             promise.reject("RUN_ERROR",
                                 "frida-server failed to start.\n" +
                                 "Download frida-server from Home screen, or use SPAWN mode instead.")
                             return@Thread
                         }
-                        // -D local routes through frida-server
-                        cmd = "$FRIDA_CLI_DEST -D local -n '$packageName' --script '$scriptPath'"
-                        modeLabel = "name (via server)"
+                        // Resolve the real process name from /proc/<pid>/cmdline or ps
+                        val namePid = resolvePid(packageName) ?: run {
+                            promise.reject("RUN_ERROR",
+                                "Process '$packageName' not running — launch the app first, then use Name mode")
+                            return@Thread
+                        }
+                        val cleanNamePid = namePid.filter { it.isDigit() }
+                        // Get the actual process name from /proc/<pid>/cmdline (null-delimited, first token)
+                        val procName = Shell.cmd(
+                            "cat /proc/$cleanNamePid/cmdline 2>/dev/null | tr '\\0' '\\n' | head -1"
+                        ).exec().out.firstOrNull()?.trim()?.ifBlank { null }
+                            ?: packageName  // fallback to package name
+                        emitScriptLog("⚙ Resolved process name: '$procName' (PID $cleanNamePid)")
+                        // Use PID instead of name to avoid process name truncation issues (15-char limit)
+                        // frida-inject -n can fail if process name > 15 chars (kernel truncates comm)
+                        cmd = "$FRIDA_CLI_DEST -D local -p $cleanNamePid --script '$scriptPath'"
+                        modeLabel = "name→PID $cleanNamePid ($procName)"
                     }
                     else -> {   // pid
                         // Attach by PID — needs frida-server
@@ -614,10 +646,24 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                 try {
                     logcatProc.inputStream.bufferedReader().use { reader ->
                         var line: String?
-                        while (fridaScriptPid != null) {
+                        // Keep streaming even after fridaScriptPid clears — drain for 3 extra seconds
+                        // so we don't miss output that arrives just after the process exits
+                        var drainUntil = Long.MAX_VALUE
+                        while (true) {
+                            // Once process signals done, give 3s extra drain window
+                            if (fridaScriptPid == null && drainUntil == Long.MAX_VALUE) {
+                                drainUntil = System.currentTimeMillis() + 3000
+                            }
+                            if (drainUntil != Long.MAX_VALUE && System.currentTimeMillis() > drainUntil) break
+
                             line = reader.readLine() ?: break
                             if (line.isBlank()) continue
-                            emitScriptLog(line)
+                            // Strip logcat timestamp/tag prefix for cleaner output
+                            // Format: "MM-DD HH:MM:SS.mmm PID TID TAG: message"
+                            val msg = line.substringAfter("Frida  : ", line)
+                                         .substringAfter("Frida: ", line)
+                                         .let { if (it == line) line else it }
+                            emitScriptLog(msg)
                         }
                     }
                 } catch (_: Exception) {}
@@ -626,40 +672,59 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
             }.start()
         }
 
+        // ── Stream errLog in real-time (stderr from frida-inject — shows errors immediately) ──
+        Thread {
+            try {
+                // Tail -f the errLog so errors appear live, not only after process exits
+                val tailProc = ProcessBuilder("su", "-c", "tail -f '$errLog' 2>/dev/null")
+                    .redirectErrorStream(true).start()
+                val noiseRx = Regex("tcgetattr|isatty|not a tty|inappropriate ioctl", RegexOption.IGNORE_CASE)
+                try {
+                    tailProc.inputStream.bufferedReader().use { r ->
+                        var l: String?
+                        while (fridaScriptPid != null || proc.isAlive) {
+                            l = r.readLine() ?: break
+                            if (l.isBlank() || noiseRx.containsMatchIn(l)) continue
+                            emitScriptLog("- $l")
+                        }
+                    }
+                } catch (_: Exception) {}
+                try { tailProc.destroy() } catch (_: Exception) {}
+            } catch (_: Exception) {}
+        }.start()
+
         Thread {
             // Drain the process stdout (mostly empty now since we redirect to files)
             try { proc.inputStream.bufferedReader().readText() } catch (_: Exception) {}
 
             val exitCode = try { proc.waitFor() } catch (_: Exception) { -1 }
 
+            // Give real-time streams a moment to flush
+            Thread.sleep(500)
+
             // Now read the captured output files
             val outLines = try { java.io.File(outLog).readLines() } catch (_: Exception) { emptyList() }
             val errLines = try { java.io.File(errLog).readLines() } catch (_: Exception) { emptyList() }
-
-            val allLines = outLines + errLines
 
             val noiseRegex = Regex(
                 "tcgetattr|isatty|not a tty|inappropriate ioctl for device",
                 RegexOption.IGNORE_CASE
             )
 
-            // Emit ALL output — stdout first then stderr
-            if (errLines.isNotEmpty()) emitScriptLog("── stderr ──")
-            for (l in allLines) {
+            // Emit stderr lines that weren't already streamed (dedup by content not possible, show all)
+            // stdout (outLog) lines — skip EXIT: and noise
+            for (l in outLines) {
                 if (l.isBlank()) continue
+                if (l.startsWith("EXIT:")) continue
                 if (noiseRegex.containsMatchIn(l)) continue
                 emitScriptLog(l)
-
                 if (!promiseResolved) {
                     val isFatal = l.lowercase().let { ll ->
                         ll.contains("unable to") || ll.contains("failed to") ||
                         ll.contains("permission denied") || ll.contains("access denied") ||
                         ll.contains("no such process") || ll.contains("error:")
                     }
-                    if (!isFatal) {
-                        promiseResolved = true
-                        promise.resolve("running:inject")
-                    }
+                    if (!isFatal) { promiseResolved = true; promise.resolve("running:inject") }
                 }
             }
 
@@ -677,14 +742,24 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                 srvLines.forEach { emitScriptLog("  $it") }
             }
 
+            // Diagnosis hint for exit 4
+            if (realExit == 4) {
+                emitScriptLog("💡 exit 4 = attach rejected. Check:")
+                emitScriptLog("   • frida-server and frida-inject versions must match exactly")
+                emitScriptLog("   • Run: /data/local/tmp/frida-server --version")
+                emitScriptLog("   • Run: /data/local/tmp/frida-inject --version")
+                emitScriptLog("   • SELinux must be Permissive")
+                emitScriptLog("   • Try re-downloading both binaries from same release")
+            }
+
             if (!promiseResolved) {
                 promiseResolved = true
-                if (allLines.isEmpty())
-                    emitScriptLog("⚠ frida-inject produced no output at all (binary issue?)")
+                val allEmpty = outLines.all { it.isBlank() || it.startsWith("EXIT:") } && errLines.all { it.isBlank() }
+                if (allEmpty) emitScriptLog("⚠ frida-inject produced no output (binary issue?)")
                 val hint = when (realExit) {
                     0    -> "exited cleanly (script ran and finished)"
                     1    -> "exit 1 — wrong package name or binary version mismatch"
-                    4    -> "exit 4 — attach/spawn rejected (see stderr above)"
+                    4    -> "exit 4 — attach/spawn rejected (version mismatch or SELinux)"
                     else -> "exit $realExit"
                 }
                 promise.reject("INJECT_ERROR", hint)
@@ -788,13 +863,50 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
 
     private fun emitScriptLog(line: String) {
         try {
-            if (!reactApplicationContext.hasActiveCatalystInstance()) return
-            val params = Arguments.createMap()
-            params.putString("line", line)
-            reactApplicationContext
-                .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-                ?.emit("FridaScriptLog", params)
+            // 1. Push to React Native JS layer
+            if (reactApplicationContext.hasActiveCatalystInstance()) {
+                val params = Arguments.createMap()
+                params.putString("line", line)
+                reactApplicationContext
+                    .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                    ?.emit("FridaScriptLog", params)
+            }
+            // 2. Push to FloatingLogService overlay (works even when app is in background)
+            FloatingLogService.pushLog(line)
         } catch (_: Exception) {}
+    }
+
+    // ─────────────────────────────────────────────
+    // Floating Overlay Log Window
+    // ─────────────────────────────────────────────
+
+    @ReactMethod
+    fun showFloatingLog(promise: Promise) {
+        try {
+            val ctx = reactApplicationContext
+            // Grant SYSTEM_ALERT_WINDOW via appops on rooted device (no user prompt needed)
+            Shell.cmd("appops set ${ctx.packageName} SYSTEM_ALERT_WINDOW allow 2>/dev/null; true").exec()
+            val intent = Intent(ctx, FloatingLogService::class.java).apply {
+                action = FloatingLogService.ACTION_SHOW
+            }
+            ctx.startService(intent)
+            promise.resolve("ok")
+        } catch (e: Exception) {
+            promise.reject("OVERLAY_ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
+    fun hideFloatingLog(promise: Promise) {
+        try {
+            val intent = Intent(reactApplicationContext, FloatingLogService::class.java).apply {
+                action = FloatingLogService.ACTION_HIDE
+            }
+            reactApplicationContext.startService(intent)
+            promise.resolve("ok")
+        } catch (e: Exception) {
+            promise.reject("OVERLAY_ERROR", e.message)
+        }
     }
 
     // ─────────────────────────────────────────────

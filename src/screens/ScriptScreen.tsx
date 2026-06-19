@@ -77,6 +77,7 @@ export default function ScriptScreen() {
   const [cloudScripts, setCloudScripts] = useState<CloudScript[]>([]);
   const [cloudLoading, setCloudLoading] = useState(false);
   const [cloudError, setCloudError] = useState('');
+  const [overlayActive, setOverlayActive] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const listenerRef = useRef<any>(null);
 
@@ -236,6 +237,20 @@ export default function ScriptScreen() {
     addOut('⏹ Stopped');
   };
 
+  const toggleOverlay = async () => {
+    try {
+      if (overlayActive) {
+        await rootBridge.hideFloatingLog();
+        setOverlayActive(false);
+      } else {
+        await rootBridge.showFloatingLog();
+        setOverlayActive(true);
+      }
+    } catch (e: any) {
+      Alert.alert('Overlay Error', e?.message ?? String(e));
+    }
+  };
+
   const runScript = async () => {
     if (!target) {
       Alert.alert('No target', 'Go to Apps tab and select a target app first');
@@ -343,6 +358,12 @@ export default function ScriptScreen() {
             <Text style={s.btnText}>▶ RUN</Text>
           </TouchableOpacity>
         )}
+        <TouchableOpacity
+          style={[s.btnOverlay, overlayActive && s.btnOverlayActive]}
+          onPress={toggleOverlay}
+        >
+          <Text style={s.btnText}>{overlayActive ? '⊠ OVR' : '⊞ OVR'}</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Output */}
@@ -576,6 +597,20 @@ const s = StyleSheet.create({
     padding: 10,
     borderRadius: 6,
     alignItems: 'center',
+  },
+  btnOverlay: {
+    flex: 1,
+    backgroundColor: '#001a33',
+    padding: 10,
+    borderRadius: 6,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#004488',
+    marginLeft: 4,
+  },
+  btnOverlayActive: {
+    backgroundColor: '#003366',
+    borderColor: '#00aaff',
   },
   btnText: {color: '#00ff88', fontFamily: 'monospace', fontWeight: 'bold', fontSize: 11},
   outputBox: {
