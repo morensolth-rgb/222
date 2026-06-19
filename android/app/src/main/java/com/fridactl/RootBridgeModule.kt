@@ -598,12 +598,41 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                 emitScriptLog("🚀 frida-inject $modeLabel...")
                 emitScriptLog("▶ $cmd")
 
-                // ── 4. Launch & stream output ─────────────────────────────────
+                // ── 4. Start logcat BEFORE frida-inject so no output is missed ──
+                startPersistentLogcat()
+
+                // ── 5. Launch frida-inject ────────────────────────────────────
                 runFridaProcess(cmd, promise)
 
             } catch (e: Exception) {
                 promise.reject("RUN_ERROR", e.message)
             }
+        }.start()
+    }
+
+    // Starts logcat BEFORE frida-inject so no early output is missed.
+    // Streams Frida-tagged lines indefinitely until stopScript() destroys fridaLogcatProc.
+    private fun startPersistentLogcat() {
+        try { fridaLogcatProc?.destroy() } catch (_: Exception) {}
+        val proc = try {
+            ProcessBuilder("su", "-c",
+                "logcat -v raw -s Frida:V frida:V FRIDA:V 2>/dev/null")
+                .redirectErrorStream(true).start()
+                .also { fridaLogcatProc = it }
+        } catch (_: Exception) { null } ?: return
+        emitScriptLog("📡 Logcat streaming (runs until you press STOP)...")
+        Thread {
+            try {
+                proc.inputStream.bufferedReader().use { reader ->
+                    var line: String?
+                    while (true) {
+                        line = reader.readLine() ?: break
+                        if (line.isBlank()) continue
+                        emitScriptLog(line)
+                    }
+                }
+            } catch (_: Exception) {}
+            emitScriptLog("📡 Logcat stopped")
         }.start()
     }
 
@@ -642,44 +671,6 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
         fridaScriptPid = "running"
 
         var promiseResolved = false
-
-        // ── Persistent logcat stream — runs until stopScript() is called ──────────────
-        // IMPORTANT: frida-inject exits immediately after attaching and loading the script.
-        // The script itself lives inside the game process and keeps logging via console.log
-        // → logcat. So we MUST keep logcat running indefinitely (not tied to frida-inject
-        // lifetime) — it only stops when the user presses STOP.
-        try { fridaLogcatProc?.destroy() } catch (_: Exception) {}  // kill any previous logcat
-        val logcatProc = try {
-            // Clear stale logcat buffer first, then stream Frida tag continuously
-            ProcessBuilder("su", "-c", "logcat -c 2>/dev/null; logcat -s Frida:V 2>/dev/null")
-                .redirectErrorStream(true)
-                .start()
-                .also { fridaLogcatProc = it }
-        } catch (_: Exception) { null }
-
-        if (logcatProc != null) {
-            emitScriptLog("📡 Logcat streaming (runs until you press STOP)...")
-            Thread {
-                try {
-                    logcatProc.inputStream.bufferedReader().use { reader ->
-                        var line: String?
-                        // Loop forever — only exits when logcatProc is destroyed (by stopScript)
-                        // or when the stream ends naturally (device killed logcat)
-                        while (true) {
-                            line = reader.readLine() ?: break
-                            if (line.isBlank()) continue
-                            // Extract just the message part — strip logcat header
-                            // Format: "MM-DD HH:MM:SS.mmm  PID  TID Frida: <message>"
-                            val msg = Regex("""^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+\w+\s+Frida\s*:\s*""")
-                                .replace(line, "")
-                                .ifBlank { line }
-                            emitScriptLog(msg)
-                        }
-                    }
-                } catch (_: Exception) {}
-                emitScriptLog("📡 Logcat stopped")
-            }.start()
-        }
 
         // ── Stream errLog in real-time (stderr from frida-inject — shows errors immediately) ──
         Thread {
