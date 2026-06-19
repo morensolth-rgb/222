@@ -446,7 +446,7 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
 
                 if (apkPath != null) {
                     // get icon entry name from aapt dump or try common paths
-                    val iconEntry = Shell.cmd("unzip -l $apkPath 2>/dev/null | grep -E 'res/.*(ic_launcher|icon).*\.png' | grep -v nodpi | tail -1 | awk '{print $4}'").exec().out
+                    val iconEntry = Shell.cmd("unzip -l $apkPath 2>/dev/null | grep -E 'res/.*(ic_launcher|icon).*\\.png' | grep -v nodpi | tail -1 | awk '{print \$4}'").exec().out
                         .firstOrNull()?.trim()
 
                     if (!iconEntry.isNullOrBlank()) {
