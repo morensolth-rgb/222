@@ -123,6 +123,7 @@ export default function AppsScreen({navigation}: {navigation: any}) {
     navigation.navigate('AfInstall', {
       packageName: item.packageName,
       appName: item.appName,
+      sdk: sdkMap[item.packageName] ?? '',
     });
   };
 

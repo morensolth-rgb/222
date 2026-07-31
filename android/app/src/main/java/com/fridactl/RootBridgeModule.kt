@@ -322,6 +322,61 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
         }.start()
     }
 
+    // ─────────────────────────────────────────────
+    // getSingularIds — read AIFA + Singular Install ID from the app's prefs via root
+    //   AIFA:               /data/data/<pkg>/shared_prefs/singular-licensing-api.xml
+    //                       -> first <string name="<uuid>">...</string>  (name IS the AIFA)
+    //   Singular Install ID:/data/data/<pkg>/shared_prefs/pref-singular-id.xml
+    //                       -> <string name="singular-id">...</string>   (value)
+    // ─────────────────────────────────────────────
+    @ReactMethod
+    fun getSingularIds(packageName: String, promise: Promise) {
+        Thread {
+            val result = WritableNativeMap()
+            val tmp = "${reactApplicationContext.filesDir}/sing_tmp_$packageName"
+
+            // ── AIFA: the key NAME itself is the AIFA uuid ──
+            try {
+                val path = "/data/data/$packageName/shared_prefs/singular-licensing-api.xml"
+                Shell.cmd("cp '$path' '$tmp' && chmod 644 '$tmp' 2>&1").exec()
+                val f = File(tmp)
+                var aifa: String? = null
+                if (f.exists()) {
+                    val content = try { f.readText() } catch (e: Exception) { "" }
+                    f.delete()
+                    // name="<uuid>" — capture the uuid that appears as the string NAME
+                    aifa = Regex("<string\\s+name=\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\"")
+                        .find(content)?.groupValues?.get(1)
+                }
+                result.putString("aifa", aifa)
+            } catch (_: Exception) {
+                result.putString("aifa", null)
+            }
+
+            // ── Singular Install ID: value of name="singular-id" ──
+            try {
+                val path = "/data/data/$packageName/shared_prefs/pref-singular-id.xml"
+                Shell.cmd("cp '$path' '$tmp' && chmod 644 '$tmp' 2>&1").exec()
+                val f = File(tmp)
+                var installId: String? = null
+                if (f.exists()) {
+                    val content = try { f.readText() } catch (e: Exception) { "" }
+                    f.delete()
+                    installId = extractXmlString(content, "singular-id")
+                    if (installId == null) {
+                        installId = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+                            .find(content)?.value
+                    }
+                }
+                result.putString("installId", installId)
+            } catch (_: Exception) {
+                result.putString("installId", null)
+            }
+
+            promise.resolve(result)
+        }.start()
+    }
+
     // Extract <string name="KEY">value</string> from SharedPreferences XML
     private fun extractXmlString(xml: String, key: String): String? {
         // Standard form
