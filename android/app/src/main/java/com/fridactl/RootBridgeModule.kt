@@ -344,8 +344,9 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                 if (f.exists()) {
                     val content = try { f.readText() } catch (e: Exception) { "" }
                     f.delete()
-                    // name="<uuid>" — capture the uuid that appears as the string NAME
-                    aifa = Regex("<string\\s+name=\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\"")
+                    // The AIFA is the uuid that appears as the key NAME — regardless of
+                    // element type (<boolean name="uuid" .../> or <string name="uuid">..)
+                    aifa = Regex("name=\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\"")
                         .find(content)?.groupValues?.get(1)
                 }
                 result.putString("aifa", aifa)
