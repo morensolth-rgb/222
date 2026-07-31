@@ -61,6 +61,8 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
 
     // ─────────────────────────────────────────────
     // getInstalledApps — launcher apps (name + icon via PM)
+    // Uses ApplicationInfo.flags to classify system/user — NO root needed,
+    // so it works on VMOS/emulators where the root shell may be flaky.
     // ─────────────────────────────────────────────
     @ReactMethod
     fun getInstalledApps(promise: Promise) {
@@ -74,20 +76,22 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                 @Suppress("DEPRECATION")
                 val activities = pm.queryIntentActivities(intent, 0)
 
-                // third-party set for isSystemApp
-                val thirdParty = Shell.cmd("pm list packages -3 2>/dev/null").exec().out
-                    .filter { it.startsWith("package:") }
-                    .map { it.removePrefix("package:").trim() }
-                    .toSet()
-
                 val arr = WritableNativeArray()
+                val seen = HashSet<String>()
 
                 for (ri in activities) {
                     val pkg = ri.activityInfo.packageName
-                    if (pkg.isBlank()) continue
+                    if (pkg.isBlank() || !seen.add(pkg)) continue
 
                     val appName = ri.loadLabel(pm).toString()
-                    val isSystem = !thirdParty.contains(pkg)
+
+                    // Classify via ApplicationInfo flags — no root required
+                    val isSystem = try {
+                        val ai = pm.getApplicationInfo(pkg, 0)
+                        (ai.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                    } catch (e: Exception) {
+                        false
+                    }
 
                     val map = WritableNativeMap()
                     map.putString("packageName", pkg)
@@ -143,10 +147,10 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
     fun detectSdks(promise: Promise) {
         Thread {
             try {
-                val thirdParty = Shell.cmd("pm list packages -3 2>/dev/null").exec().out
-                    .filter { it.startsWith("package:") }
-                    .map { it.removePrefix("package:").trim() }
-                    .toSet()
+                // Build the user/third-party set via PackageManager flags — no root,
+                // so it stays reliable on VMOS/containers where the root shell may
+                // return empty for `pm list packages -3`.
+                val thirdParty = thirdPartyPackages()
                 val sdkMap = buildSdkMap(thirdParty)
                 val result = WritableNativeMap()
                 for ((pkg, label) in sdkMap) {
@@ -191,6 +195,23 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
         }.start()
     }
 
+    // Third-party (non-system) packages via PackageManager flags — no root.
+    private fun thirdPartyPackages(): Set<String> {
+        val set = HashSet<String>()
+        try {
+            val pm = reactApplicationContext.packageManager
+            @Suppress("DEPRECATION")
+            val pkgs = pm.getInstalledApplications(0)
+            for (ai in pkgs) {
+                val isSystem = (ai.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                val isUpdatedSystem =
+                    (ai.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+                if (!isSystem || isUpdatedSystem) set.add(ai.packageName)
+            }
+        } catch (_: Exception) {}
+        return set
+    }
+
     private fun buildSdkMap(userPkgs: Set<String>): Map<String, String> {
         val result = mutableMapOf<String, String>()
         try {
@@ -212,7 +233,10 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
             }
 
             for ((pkg, files) in filesByPkg) {
-                if (!userPkgs.contains(pkg)) continue
+                // Skip system apps only when we actually resolved a user set;
+                // if it's empty (PM gave nothing) don't filter, so the screen
+                // never ends up blank.
+                if (userPkgs.isNotEmpty() && !userPkgs.contains(pkg)) continue
                 val sdks = mutableListOf<String>()
                 if (files.any { it.contains("appsflyer") }) sdks.add("AppsFlyer")
                 if (files.any { it.contains("adjust") })    sdks.add("Adjust")
