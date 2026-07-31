@@ -26,6 +26,14 @@ export interface SingularIds {
   installId?: string | null;
 }
 
+export interface AppSdkInfo {
+  appsflyer: boolean;
+  singular: boolean;
+  adjust: boolean;
+  branch?: boolean;
+  files: string[];
+}
+
 export const rootBridge = {
   checkRoot:        (): Promise<boolean>   => RootBridge.checkRoot(),
   execShell:        (cmd: string): Promise<string> => RootBridge.execShell(cmd),
@@ -35,6 +43,7 @@ export const rootBridge = {
   getAfInstallation:(packageName: string): Promise<AfResult> => RootBridge.getAfInstallation(packageName),
   getAdvertisingId: (): Promise<AdidResult> => RootBridge.getAdvertisingId(),
   getSingularIds:   (packageName: string): Promise<SingularIds> => RootBridge.getSingularIds(packageName),
+  detectAppSdk:     (packageName: string): Promise<AppSdkInfo> => RootBridge.detectAppSdk(packageName),
   readDir:          (path: string): Promise<FileEntry[]> => RootBridge.readDir(path),
   readFile:         (path: string): Promise<string>      => RootBridge.readFile(path),
   writeFile:        (path: string, content: string): Promise<string> => RootBridge.writeFile(path, content),

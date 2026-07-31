@@ -159,6 +159,38 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
         }.start()
     }
 
+    // ─────────────────────────────────────────────
+    // detectAppSdk — probe a SINGLE app's shared_prefs and report which
+    // tracking SDKs it actually uses. Works per-app (no reliance on
+    // `pm list packages -3`), so it's reliable across devices.
+    // Returns: { appsflyer: bool, singular: bool, adjust: bool, files: [...] }
+    // ─────────────────────────────────────────────
+    @ReactMethod
+    fun detectAppSdk(packageName: String, promise: Promise) {
+        Thread {
+            try {
+                val dir = "/data/data/$packageName/shared_prefs"
+                val out = Shell.cmd("ls '$dir' 2>/dev/null").exec().out
+                    .map { it.trim().lowercase() }
+                    .filter { it.isNotBlank() }
+
+                val result = WritableNativeMap()
+                result.putBoolean("appsflyer", out.any { it.contains("appsflyer") })
+                result.putBoolean("singular",  out.any { it.contains("singular") })
+                result.putBoolean("adjust",    out.any { it.contains("adjust") })
+                result.putBoolean("branch",    out.any { it.contains("branch") })
+
+                val files = Arguments.createArray()
+                out.forEach { files.pushString(it) }
+                result.putArray("files", files)
+
+                promise.resolve(result)
+            } catch (e: Exception) {
+                promise.reject("DETECT_APP_SDK_ERROR", e.message)
+            }
+        }.start()
+    }
+
     private fun buildSdkMap(userPkgs: Set<String>): Map<String, String> {
         val result = mutableMapOf<String, String>()
         try {

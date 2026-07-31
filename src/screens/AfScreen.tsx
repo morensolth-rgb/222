@@ -9,7 +9,7 @@ import {
   ToastAndroid,
 } from 'react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
-import {rootBridge} from '../native/RootBridge';
+import {rootBridge, AppSdkInfo} from '../native/RootBridge';
 
 export default function AfScreen({route}: any) {
   const {packageName, appName, sdk} = route.params as {
@@ -18,16 +18,8 @@ export default function AfScreen({route}: any) {
     sdk?: string;
   };
 
-  // Normalise the detected SDK string into a primary type
-  const sdkType: 'appsflyer' | 'adjust' | 'singular' | 'unknown' = (() => {
-    const s = (sdk ?? '').toLowerCase();
-    if (s.includes('appsflyer')) return 'appsflyer';
-    if (s.includes('singular')) return 'singular';
-    if (s.includes('adjust')) return 'adjust';
-    return 'unknown';
-  })();
-
   const [loading, setLoading] = useState(true);
+  const [sdkInfo, setSdkInfo] = useState<AppSdkInfo | null>(null);
   const [afValue, setAfValue] = useState<string | null>(null);
   const [adidValue, setAdidValue] = useState<string | null>(null);
   const [aifa, setAifa] = useState<string | null>(null);
@@ -45,17 +37,27 @@ export default function AfScreen({route}: any) {
     setAdidValue(null);
     setAifa(null);
     setSingularInstallId(null);
+    setSdkInfo(null);
+
+    // 1. Probe the app's own shared_prefs directly — the source of truth.
+    //    Reliable across devices (doesn't depend on `pm list packages -3`).
+    let info: AppSdkInfo = {appsflyer: false, singular: false, adjust: false, files: []};
+    try {
+      info = await rootBridge.detectAppSdk(packageName);
+    } catch (_) {}
+    setSdkInfo(info);
 
     const tasks: Promise<void>[] = [];
 
-    // Advertising ID — needed for AppsFlyer combo + Adjust display
+    // 2. Device Advertising ID — always useful (AF combo + Adjust + fallback)
     tasks.push(
       rootBridge.getAdvertisingId()
         .then(r => { if (r.found && r.value) setAdidValue(r.value); })
         .catch(() => {}),
     );
 
-    if (sdkType === 'appsflyer' || sdkType === 'unknown') {
+    // 3. AppsFlyer — read when the app actually has an appsflyer pref file
+    if (info.appsflyer) {
       tasks.push(
         rootBridge.getAfInstallation(packageName)
           .then(r => {
@@ -68,7 +70,8 @@ export default function AfScreen({route}: any) {
       );
     }
 
-    if (sdkType === 'singular') {
+    // 4. Singular — read when the app has singular pref files
+    if (info.singular) {
       tasks.push(
         rootBridge.getSingularIds(packageName)
           .then(r => {
@@ -89,15 +92,32 @@ export default function AfScreen({route}: any) {
     ToastAndroid.show(`${label} copied`, ToastAndroid.SHORT);
   };
 
-  // The combined one-liner for AppsFlyer games: ADID|AF_INSTALLATION
+  // One-liner for AppsFlyer games: ADID|AF_INSTALLATION
   const afCombined =
     adidValue && afValue ? `${adidValue}|${afValue}` : (afValue ?? null);
+
+  const showAdjustBlock =
+    !!sdkInfo && sdkInfo.adjust && !sdkInfo.appsflyer && !sdkInfo.singular;
+
+  const hasAnyData =
+    !!afCombined || !!adidValue || !!aifa || !!singularInstallId;
+
+  // Pretty SDK label for the header (from live probe, fallback to passed sdk)
+  const detectedLabel = (() => {
+    if (!sdkInfo) return sdk ?? '';
+    const parts: string[] = [];
+    if (sdkInfo.appsflyer) parts.push('AppsFlyer');
+    if (sdkInfo.singular) parts.push('Singular');
+    if (sdkInfo.adjust) parts.push('Adjust');
+    if (sdkInfo.branch) parts.push('Branch');
+    return parts.join(' · ') || sdk || '';
+  })();
 
   return (
     <ScrollView style={s.container} contentContainerStyle={s.content}>
       <Text style={s.appName}>{appName ?? packageName}</Text>
       <Text style={s.pkg}>{packageName}</Text>
-      {!!sdk && <Text style={s.sdkTag}>{sdk}</Text>}
+      {!!detectedLabel && <Text style={s.sdkTag}>{detectedLabel}</Text>}
 
       {loading ? (
         <View style={s.center}>
@@ -107,7 +127,7 @@ export default function AfScreen({route}: any) {
       ) : (
         <>
           {/* ── AppsFlyer ── single line: ADID|AF ── */}
-          {sdkType === 'appsflyer' && (
+          {sdkInfo?.appsflyer && (
             <View style={s.box}>
               <Text style={s.label}>AF · ADID | INSTALLATION</Text>
               {afCombined ? (
@@ -116,28 +136,13 @@ export default function AfScreen({route}: any) {
                   <Text style={s.tapHint}>tap to copy</Text>
                 </TouchableOpacity>
               ) : (
-                <Text style={s.none}>No AppsFlyer data for this app</Text>
-              )}
-            </View>
-          )}
-
-          {/* ── Adjust ── only the device Advertising ID ── */}
-          {sdkType === 'adjust' && (
-            <View style={s.box}>
-              <Text style={s.label}>ADVERTISING ID (device)</Text>
-              {adidValue ? (
-                <TouchableOpacity activeOpacity={0.6} onPress={() => copy(adidValue, 'Advertising ID')}>
-                  <Text style={s.value} selectable>{adidValue}</Text>
-                  <Text style={s.tapHint}>tap to copy</Text>
-                </TouchableOpacity>
-              ) : (
-                <Text style={s.none}>Not available on this device</Text>
+                <Text style={s.none}>appsflyer-data.xml found but AF_INSTALLATION missing</Text>
               )}
             </View>
           )}
 
           {/* ── Singular ── two separate ids ── */}
-          {sdkType === 'singular' && (
+          {sdkInfo?.singular && (
             <>
               <View style={s.box}>
                 <Text style={s.label}>AIFA</Text>
@@ -165,31 +170,39 @@ export default function AfScreen({route}: any) {
             </>
           )}
 
-          {/* ── Unknown / fallback ── show whatever we could read ── */}
-          {sdkType === 'unknown' && (
-            <>
-              <View style={s.box}>
-                <Text style={s.label}>AF · ADID | INSTALLATION</Text>
-                {afCombined ? (
-                  <TouchableOpacity activeOpacity={0.6} onPress={() => copy(afCombined, 'Copied')}>
-                    <Text style={s.value} selectable>{afCombined}</Text>
-                    <Text style={s.tapHint}>tap to copy</Text>
-                  </TouchableOpacity>
-                ) : adidValue ? (
-                  <TouchableOpacity activeOpacity={0.6} onPress={() => copy(adidValue, 'Advertising ID')}>
-                    <Text style={s.value} selectable>{adidValue}</Text>
-                    <Text style={s.tapHint}>tap to copy (advertising id)</Text>
-                  </TouchableOpacity>
-                ) : (
-                  <Text style={s.none}>No data for this app</Text>
-                )}
-              </View>
-            </>
+          {/* ── Adjust (pure) ── only the device Advertising ID ── */}
+          {showAdjustBlock && (
+            <View style={s.box}>
+              <Text style={s.label}>ADVERTISING ID (device)</Text>
+              {adidValue ? (
+                <TouchableOpacity activeOpacity={0.6} onPress={() => copy(adidValue, 'Advertising ID')}>
+                  <Text style={s.value} selectable>{adidValue}</Text>
+                  <Text style={s.tapHint}>tap to copy</Text>
+                </TouchableOpacity>
+              ) : (
+                <Text style={s.none}>Not available on this device</Text>
+              )}
+            </View>
+          )}
+
+          {/* ── Fallback: nothing detected / no data ── show device ADID ── */}
+          {!hasAnyData && (
+            <View style={s.box}>
+              <Text style={s.label}>ADVERTISING ID (device)</Text>
+              {adidValue ? (
+                <TouchableOpacity activeOpacity={0.6} onPress={() => copy(adidValue, 'Advertising ID')}>
+                  <Text style={s.value} selectable>{adidValue}</Text>
+                  <Text style={s.tapHint}>tap to copy</Text>
+                </TouchableOpacity>
+              ) : (
+                <Text style={s.none}>No identifiers found for this app</Text>
+              )}
+            </View>
           )}
         </>
       )}
 
-      {!loading && sdkType === 'appsflyer' && raw !== '' && (
+      {!loading && sdkInfo?.appsflyer && raw !== '' && (
         <View style={s.rawBox}>
           <TouchableOpacity onPress={() => setShowRaw(v => !v)}>
             <Text style={s.rawToggle}>{showRaw ? '▼' : '▶'} Raw appsflyer-data.xml</Text>
