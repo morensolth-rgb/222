@@ -215,12 +215,28 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
     private fun buildSdkMap(userPkgs: Set<String>): Map<String, String> {
         val result = mutableMapOf<String, String>()
         try {
-            val out = Shell.cmd(
+            // Prefer iterating the resolved package set and reading each
+            // /data/data/<pkg>/shared_prefs directly. On VMOS/containers the
+            // glob on /data/data/* often fails (listing the parent dir is
+            // blocked even with root), while direct per-package paths work.
+            // Fall back to the glob only when PackageManager gave us nothing.
+            val cmd = if (userPkgs.isNotEmpty()) {
+                val sb = StringBuilder()
+                for (pkg in userPkgs) {
+                    // package names are [a-zA-Z0-9_.] so no shell escaping needed
+                    if (pkg.isBlank()) continue
+                    sb.append("ls /data/data/").append(pkg)
+                        .append("/shared_prefs 2>/dev/null | while read f; do echo \"")
+                        .append(pkg).append(":\$f\"; done; ")
+                }
+                sb.toString()
+            } else {
                 "for d in /data/data/*/shared_prefs; do " +
                 "pkg=\$(echo \$d | cut -d/ -f4); " +
                 "ls \$d 2>/dev/null | while read f; do echo \"\$pkg:\$f\"; done; " +
                 "done 2>/dev/null"
-            ).exec().out
+            }
+            val out = Shell.cmd(cmd).exec().out
 
             val filesByPkg = mutableMapOf<String, MutableList<String>>()
             for (line in out) {
