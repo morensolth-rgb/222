@@ -36,18 +36,12 @@ android {
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
     }
-    aaptOptions {
-        noCompress "frida-server-arm64", "frida-gadget-arm64.so", "apktool.jar", "uber-signer.jar"
-    }
 }
 
 dependencies {
     implementation("com.facebook.react:react-android")
     implementation("com.facebook.react:hermes-android")
     implementation("com.github.topjohnwu.libsu:core:5.2.2")
-    implementation("com.github.topjohnwu.libsu:service:5.2.2")
-    implementation("org.apache.commons:commons-compress:1.26.1")
-    implementation("org.tukaani:xz:1.9")
 }
 
 apply from: file("../../node_modules/@react-native-community/cli-platform-android/native_modules.gradle"); applyNativeModulesAppBuildGradle(project)

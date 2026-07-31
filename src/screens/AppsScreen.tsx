@@ -117,9 +117,13 @@ export default function AppsScreen({navigation}: {navigation: any}) {
     } catch (_) {}
   };
 
-  const selectApp = async (pkg: string) => {
-    setSelected(pkg);
-    await AsyncStorage.setItem('selectedApp', pkg);
+  const openAf = (item: AppInfo) => {
+    setSelected(item.packageName);
+    AsyncStorage.setItem('selectedApp', item.packageName).catch(() => {});
+    navigation.navigate('AfInstall', {
+      packageName: item.packageName,
+      appName: item.appName,
+    });
   };
 
   const userCount   = apps.filter(a => !a.isSystemApp).length;
@@ -137,7 +141,7 @@ export default function AppsScreen({navigation}: {navigation: any}) {
     return (
       <TouchableOpacity
         style={[styles.cell, isSelected && styles.cellSelected]}
-        onPress={() => selectApp(item.packageName)}
+        onPress={() => openAf(item)}
         onLongPress={() =>
           navigation.navigate('FileBrowser', {
             path:  `/data/data/${item.packageName}/shared_prefs`,
