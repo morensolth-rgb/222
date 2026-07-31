@@ -266,6 +266,62 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
         }.start()
     }
 
+    // ─────────────────────────────────────────────
+    // getAdvertisingId — read GAID from Google Play services prefs via root
+    // /data/data/com.google.android.gms/shared_prefs/adid_settings.xml -> adid_key
+    // ─────────────────────────────────────────────
+    @ReactMethod
+    fun getAdvertisingId(promise: Promise) {
+        Thread {
+            try {
+                val candidates = listOf(
+                    "/data/data/com.google.android.gms/shared_prefs/adid_settings.xml",
+                    "/data/data/com.google.android.gms/shared_prefs/adid_settings"
+                )
+                val tmp = "${reactApplicationContext.filesDir}/adid_tmp"
+                var content = ""
+
+                for (path in candidates) {
+                    Shell.cmd("cp '$path' '$tmp' && chmod 644 '$tmp' 2>&1").exec()
+                    val f = File(tmp)
+                    if (f.exists()) {
+                        content = try { f.readText() } catch (e: Exception) { "" }
+                        f.delete()
+                        if (content.isNotBlank()) break
+                    }
+                }
+
+                val result = WritableNativeMap()
+
+                if (content.isBlank()) {
+                    result.putBoolean("found", false)
+                    result.putString("message", "Advertising ID not found on this device.")
+                    promise.resolve(result)
+                    return@Thread
+                }
+
+                var value = extractXmlString(content, "adid_key")
+                if (value == null) {
+                    // Fallback: any UUID-looking string
+                    value = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+                        .find(content)?.value
+                }
+
+                if (value != null) {
+                    result.putBoolean("found", true)
+                    result.putString("value", value)
+                } else {
+                    result.putBoolean("found", false)
+                    result.putString("message", "adid_key not found inside adid_settings.")
+                }
+
+                promise.resolve(result)
+            } catch (e: Exception) {
+                promise.reject("ADID_ERROR", e.message)
+            }
+        }.start()
+    }
+
     // Extract <string name="KEY">value</string> from SharedPreferences XML
     private fun extractXmlString(xml: String, key: String): String? {
         // Standard form

@@ -6,15 +6,16 @@ import {
   ActivityIndicator,
   TouchableOpacity,
   ScrollView,
-  Share,
   ToastAndroid,
 } from 'react-native';
+import Clipboard from '@react-native-clipboard/clipboard';
 import {rootBridge} from '../native/RootBridge';
 
 export default function AfScreen({route}: any) {
   const {packageName, appName} = route.params;
   const [loading, setLoading] = useState(true);
   const [afValue, setAfValue] = useState<string | null>(null);
+  const [adidValue, setAdidValue] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [raw, setRaw] = useState('');
   const [showRaw, setShowRaw] = useState(false);
@@ -27,23 +28,37 @@ export default function AfScreen({route}: any) {
     setLoading(true);
     setError('');
     setAfValue(null);
-    try {
-      const res = await rootBridge.getAfInstallation(packageName);
+    setAdidValue(null);
+
+    // Load both in parallel — ADID is device-level, independent of the app
+    const [afRes, adidRes] = await Promise.allSettled([
+      rootBridge.getAfInstallation(packageName),
+      rootBridge.getAdvertisingId(),
+    ]);
+
+    if (afRes.status === 'fulfilled') {
+      const res = afRes.value;
       if (res.found && res.value) {
         setAfValue(res.value);
         setRaw(res.raw ?? '');
       } else {
         setError(res.message ?? 'AF_INSTALLATION not found for this app.');
       }
-    } catch (e: any) {
-      setError(e?.message ?? 'Failed to read AF_INSTALLATION.');
+    } else {
+      setError(afRes.reason?.message ?? 'Failed to read AF_INSTALLATION.');
     }
+
+    if (adidRes.status === 'fulfilled' && adidRes.value.found && adidRes.value.value) {
+      setAdidValue(adidRes.value.value);
+    }
+
     setLoading(false);
   };
 
-  const copy = () => {
-    if (!afValue) return;
-    Share.share({message: afValue});
+  const copy = (value: string | null, label: string) => {
+    if (!value) return;
+    Clipboard.setString(value);
+    ToastAndroid.show(`${label} copied`, ToastAndroid.SHORT);
   };
 
   return (
@@ -51,6 +66,7 @@ export default function AfScreen({route}: any) {
       <Text style={s.appName}>{appName ?? packageName}</Text>
       <Text style={s.pkg}>{packageName}</Text>
 
+      {/* AF_INSTALLATION */}
       <View style={s.box}>
         <Text style={s.label}>AF_INSTALLATION</Text>
         {loading ? (
@@ -66,16 +82,31 @@ export default function AfScreen({route}: any) {
             </TouchableOpacity>
           </View>
         ) : (
-          <>
+          <TouchableOpacity activeOpacity={0.6} onPress={() => copy(afValue, 'AF_INSTALLATION')}>
             <Text style={s.value} selectable>
               {afValue}
             </Text>
-            <TouchableOpacity style={s.copyBtn} onPress={copy}>
-              <Text style={s.copyText}>Copy / Share</Text>
-            </TouchableOpacity>
-          </>
+            <Text style={s.tapHint}>tap to copy</Text>
+          </TouchableOpacity>
         )}
       </View>
+
+      {/* Advertising ID — device level, shown below AF */}
+      {!loading && (
+        <View style={s.box}>
+          <Text style={s.label}>ADVERTISING ID (device)</Text>
+          {adidValue ? (
+            <TouchableOpacity activeOpacity={0.6} onPress={() => copy(adidValue, 'Advertising ID')}>
+              <Text style={s.value} selectable>
+                {adidValue}
+              </Text>
+              <Text style={s.tapHint}>tap to copy</Text>
+            </TouchableOpacity>
+          ) : (
+            <Text style={s.noAdid}>Not available on this device</Text>
+          )}
+        </View>
+      )}
 
       {!loading && !error && raw !== '' && (
         <View style={s.rawBox}>
@@ -128,17 +159,14 @@ const s = StyleSheet.create({
     lineHeight: 24,
     letterSpacing: 0.5,
   },
-  copyBtn: {
-    marginTop: 18,
-    alignSelf: 'flex-start',
-    paddingHorizontal: 16,
-    paddingVertical: 9,
-    backgroundColor: '#0a2a15',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#00ff88',
+  tapHint: {
+    color: '#2a6a40',
+    fontSize: 10,
+    fontFamily: 'monospace',
+    marginTop: 10,
+    letterSpacing: 1,
   },
-  copyText: {color: '#00ff88', fontFamily: 'monospace', fontSize: 13},
+  noAdid: {color: '#444', fontFamily: 'monospace', fontSize: 12},
 
   center: {alignItems: 'center', gap: 12, paddingVertical: 12},
   hint: {color: '#444', fontFamily: 'monospace', fontSize: 12},

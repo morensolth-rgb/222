@@ -15,6 +15,12 @@ export interface AfResult {
   message?: string;
 }
 
+export interface AdidResult {
+  found: boolean;
+  value?: string;
+  message?: string;
+}
+
 export const rootBridge = {
   checkRoot:        (): Promise<boolean>   => RootBridge.checkRoot(),
   execShell:        (cmd: string): Promise<string> => RootBridge.execShell(cmd),
@@ -22,6 +28,7 @@ export const rootBridge = {
   getAppIcon:       (packageName: string): Promise<string | null> => RootBridge.getAppIcon(packageName),
   detectSdks:       (): Promise<Record<string, string>> => RootBridge.detectSdks(),
   getAfInstallation:(packageName: string): Promise<AfResult> => RootBridge.getAfInstallation(packageName),
+  getAdvertisingId: (): Promise<AdidResult> => RootBridge.getAdvertisingId(),
   readDir:          (path: string): Promise<FileEntry[]> => RootBridge.readDir(path),
   readFile:         (path: string): Promise<string>      => RootBridge.readFile(path),
   writeFile:        (path: string, content: string): Promise<string> => RootBridge.writeFile(path, content),
