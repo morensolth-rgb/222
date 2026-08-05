@@ -92,15 +92,11 @@ export default function AfScreen({route}: any) {
     ToastAndroid.show(`${label} copied`, ToastAndroid.SHORT);
   };
 
-  // One-liner for AppsFlyer games: ADID|AF_INSTALLATION
-  const afCombined =
-    adidValue && afValue ? `${adidValue}|${afValue}` : (afValue ?? null);
-
   const showAdjustBlock =
     !!sdkInfo && sdkInfo.adjust && !sdkInfo.appsflyer && !sdkInfo.singular;
 
   const hasAnyData =
-    !!afCombined || !!adidValue || !!aifa || !!singularInstallId;
+    !!afValue || !!adidValue || !!aifa || !!singularInstallId;
 
   // Pretty SDK label for the header (from live probe, fallback to passed sdk)
   const detectedLabel = (() => {
@@ -126,19 +122,33 @@ export default function AfScreen({route}: any) {
         </View>
       ) : (
         <>
-          {/* ── AppsFlyer ── single line: ADID|AF ── */}
+          {/* ── AppsFlyer ── separate lines: ADID then AF_INSTALLATION ── */}
           {sdkInfo?.appsflyer && (
-            <View style={s.box}>
-              <Text style={s.label}>AF · ADID | INSTALLATION</Text>
-              {afCombined ? (
-                <TouchableOpacity activeOpacity={0.6} onPress={() => copy(afCombined, 'Copied')}>
-                  <Text style={s.value} selectable>{afCombined}</Text>
-                  <Text style={s.tapHint}>tap to copy</Text>
-                </TouchableOpacity>
-              ) : (
-                <Text style={s.none}>appsflyer-data.xml found but AF_INSTALLATION missing</Text>
-              )}
-            </View>
+            <>
+              <View style={s.box}>
+                <Text style={s.label}>Advertising ID</Text>
+                {adidValue ? (
+                  <TouchableOpacity activeOpacity={0.6} onPress={() => copy(adidValue, 'Advertising ID')}>
+                    <Text style={s.value} selectable>{adidValue}</Text>
+                    <Text style={s.tapHint}>tap to copy</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text style={s.none}>Advertising ID not available</Text>
+                )}
+              </View>
+
+              <View style={s.box}>
+                <Text style={s.label}>AF Installation</Text>
+                {afValue ? (
+                  <TouchableOpacity activeOpacity={0.6} onPress={() => copy(afValue, 'AF Installation')}>
+                    <Text style={s.value} selectable>{afValue}</Text>
+                    <Text style={s.tapHint}>tap to copy</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text style={s.none}>appsflyer-data.xml found but AF_INSTALLATION missing</Text>
+                )}
+              </View>
+            </>
           )}
 
           {/* ── Singular ── two separate ids ── */}
