@@ -1,7 +1,8 @@
-import React from 'react';
+import React, {useEffect, useState} from 'react';
 import {NavigationContainer} from '@react-navigation/native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import AppsScreen         from './src/screens/AppsScreen';
 import FileBrowserScreen  from './src/screens/FileBrowserScreen';
@@ -12,10 +13,33 @@ import ValueHuntScreen    from './src/screens/ValueHuntScreen';
 
 const Stack = createNativeStackNavigator();
 
+// Survive process death: if Android kills the app in the background,
+// reopen on the exact screen the user was on.
+const NAV_STATE_KEY = 'nav:state:v1';
+
 export default function App() {
+  const [ready, setReady] = useState(false);
+  const [initialState, setInitialState] = useState<any>(undefined);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = await AsyncStorage.getItem(NAV_STATE_KEY);
+        if (saved) setInitialState(JSON.parse(saved));
+      } catch (_) {}
+      setReady(true);
+    })();
+  }, []);
+
+  if (!ready) return null;
+
   return (
     <SafeAreaProvider>
-      <NavigationContainer>
+      <NavigationContainer
+        initialState={initialState}
+        onStateChange={state =>
+          AsyncStorage.setItem(NAV_STATE_KEY, JSON.stringify(state)).catch(() => {})
+        }>
         <Stack.Navigator
           screenOptions={{
             headerStyle: {backgroundColor: '#0d0d0d'},

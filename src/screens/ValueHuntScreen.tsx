@@ -11,6 +11,7 @@ import {
   ScrollView,
   Modal,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {rootBridge, ValueHit, ValueSearchFile} from '../native/RootBridge';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -54,9 +55,41 @@ export default function ValueHuntScreen({navigation, route}: any) {
   const [writeVal, setWriteVal] = useState('');
   const [writing, setWriting] = useState(false);
 
+  // Persist search state so it survives process death (app killed in
+  // background while playing the game)
+  const stateKey = `valuehunt:${packageName}`;
+
   useEffect(() => {
     navigation.setOptions({title: `Value Hunt — ${appName}`});
-  }, [navigation, appName]);
+    AsyncStorage.getItem(stateKey).then(v => {
+      if (!v) return;
+      try {
+        const j = JSON.parse(v);
+        if (Array.isArray(j.hits) && j.hits.length > 0) {
+          setHits(j.hits);
+          setSearchedValues(j.searchedValues ?? []);
+          setValues(j.values ?? '');
+          const byPath = new Map<string, ValueHit[]>();
+          for (const h of j.hits as ValueHit[]) {
+            if (!byPath.has(h.path)) byPath.set(h.path, []);
+            byPath.get(h.path)!.push(h);
+          }
+          setGroups(
+            Array.from(byPath.entries()).map(([path, hs]) => ({path, size: '', hits: hs})),
+          );
+          setPhase(j.hits.length === 1 ? 'done' : 'refine');
+        }
+      } catch (_) {}
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const persist = (hs: ValueHit[], vals: string[], input: string) => {
+    AsyncStorage.setItem(
+      stateKey,
+      JSON.stringify({hits: hs, searchedValues: vals, values: input}),
+    ).catch(() => {});
+  };
 
   // ── Initial search ────────────────────────────────────────────────────────
   const runSearch = async () => {
@@ -92,8 +125,10 @@ export default function ValueHuntScreen({navigation, route}: any) {
           }),
       }));
       setGroups(gs);
-      setHits(gs.flatMap(g => g.hits));
+      const flat = gs.flatMap(g => g.hits);
+      setHits(flat);
       setSearchedValues(vals);
+      persist(flat, vals, values);
       setPhase(gs.length > 0 ? 'refine' : 'search');
       if (gs.length === 0) {
         setError(
@@ -119,6 +154,7 @@ export default function ValueHuntScreen({navigation, route}: any) {
       const csv = hits.map(h => `${h.path}:${h.offset}:${h.encoding}`).join(';');
       const kept: ValueHit[] = await rootBridge.valueRefine(csv, nv);
       setHits(kept);
+      persist(kept, [...searchedValues, nv], values);
       // regroup
       const byPath = new Map<string, ValueHit[]>();
       for (const h of kept) {
