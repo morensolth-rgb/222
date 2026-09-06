@@ -7,9 +7,13 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
+  Modal,
+  TextInput,
+  ScrollView,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {rootBridge, SaveCandidate} from '../native/RootBridge';
+import {analyzeSave, getApiKey, setApiKey} from '../ai/aiClient';
 
 // ─── Snapshot parsing / diffing ──────────────────────────────────────────────
 interface SnapEntry {size: number; mtime: number; md5: string}
@@ -104,6 +108,54 @@ export default function SaveHunterScreen({navigation, route}: any) {
   const [snapping, setSnapping] = useState(false);
   const [diffs, setDiffs] = useState<DiffEntry[] | null>(null);
   const [diffError, setDiffError] = useState('');
+
+  // AI analysis state
+  const [aiVisible, setAiVisible] = useState(false);
+  const [aiPath, setAiPath] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResult, setAiResult] = useState('');
+  const [aiError, setAiError] = useState('');
+  const [aiKeyInput, setAiKeyInput] = useState('');
+  const [aiHasKey, setAiHasKey] = useState(false);
+
+  useEffect(() => {
+    getApiKey().then(k => setAiHasKey(!!k));
+  }, []);
+
+  const runAiAnalysis = async (path: string) => {
+    setAiPath(path);
+    setAiVisible(true);
+    setAiLoading(true);
+    setAiResult('');
+    setAiError('');
+    try {
+      const content = await rootBridge.readFile(path);
+      const out = await analyzeSave({path, appName, content});
+      setAiResult(out);
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      if (msg === 'NO_KEY' || msg === 'BAD_KEY') {
+        setAiError(
+          msg === 'NO_KEY'
+            ? 'No API key set. Paste your OpenAI key below — it stays on this device only.'
+            : 'API key rejected (401). Check the key and try again.',
+        );
+        setAiHasKey(false);
+      } else {
+        setAiError(msg);
+      }
+    }
+    setAiLoading(false);
+  };
+
+  const saveAiKey = async () => {
+    if (!aiKeyInput.trim()) return;
+    await setApiKey(aiKeyInput);
+    setAiHasKey(true);
+    setAiKeyInput('');
+    setAiError('');
+    if (aiPath) runAiAnalysis(aiPath);
+  };
 
   useEffect(() => {
     navigation.setOptions({title: `Save Hunter — ${appName}`});
@@ -200,6 +252,12 @@ export default function SaveHunterScreen({navigation, route}: any) {
         <View style={s.cardHead}>
           <Text style={[s.kindIcon, {color: km.color}]}>{km.icon}</Text>
           <Text style={s.cardName} numberOfLines={1}>{name}</Text>
+          <TouchableOpacity
+            style={s.aiBtn}
+            onPress={() => runAiAnalysis(item.path)}
+            hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+            <Text style={s.aiBtnText}>🤖</Text>
+          </TouchableOpacity>
           <View style={s.scorePill}>
             <Text style={s.scoreText}>{item.score}</Text>
           </View>
@@ -261,6 +319,14 @@ export default function SaveHunterScreen({navigation, route}: any) {
             {cm.label}
           </Text>
           <Text style={s.cardName} numberOfLines={1}>{name}</Text>
+          {item.change !== 'deleted' && (
+            <TouchableOpacity
+              style={s.aiBtn}
+              onPress={() => runAiAnalysis(item.path)}
+              hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+              <Text style={s.aiBtnText}>🤖</Text>
+            </TouchableOpacity>
+          )}
           <Text style={s.deltaText}>
             {item.change === 'deleted'
               ? `-${item.oldSize}B`
@@ -356,6 +422,73 @@ export default function SaveHunterScreen({navigation, route}: any) {
         </Text>
       </TouchableOpacity>
       {tab === 'scan' ? scanBody : diffBody}
+
+      {/* AI analysis modal */}
+      <Modal
+        visible={aiVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setAiVisible(false)}>
+        <View style={s.aiOverlay}>
+          <View style={s.aiSheet}>
+            <Text style={s.aiTitle}>🤖 AI Save Analysis</Text>
+            <Text style={s.aiPath} numberOfLines={2}>{aiPath}</Text>
+
+            {!aiHasKey && (
+              <View style={s.aiKeyRow}>
+                <TextInput
+                  style={s.aiKeyInput}
+                  placeholder="sk-... (OpenAI API key)"
+                  placeholderTextColor="#444"
+                  value={aiKeyInput}
+                  onChangeText={setAiKeyInput}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  secureTextEntry
+                />
+                <TouchableOpacity style={s.aiKeySave} onPress={saveAiKey}>
+                  <Text style={s.aiKeySaveText}>Save</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {aiLoading ? (
+              <View style={s.aiCenter}>
+                <ActivityIndicator color="#c56cf0" size="large" />
+                <Text style={s.hint}>Reading file via root, asking AI...</Text>
+              </View>
+            ) : aiError ? (
+              <View style={s.aiCenter}>
+                <Text style={s.errText}>⚠ {aiError}</Text>
+                {aiHasKey && (
+                  <TouchableOpacity
+                    style={s.retryBtn}
+                    onPress={() => runAiAnalysis(aiPath)}>
+                    <Text style={s.retryText}>Retry</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            ) : (
+              <ScrollView style={s.aiScroll}>
+                <Text style={s.aiResult}>{aiResult}</Text>
+              </ScrollView>
+            )}
+
+            <View style={s.aiFooter}>
+              {aiHasKey && (
+                <TouchableOpacity onPress={() => setAiHasKey(false)}>
+                  <Text style={s.aiChangeKey}>change key</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={s.aiClose}
+                onPress={() => setAiVisible(false)}>
+                <Text style={s.aiCloseText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -428,6 +561,82 @@ const s = StyleSheet.create({
     borderColor: '#00ff88',
   },
   scoreText: {color: '#00ff88', fontFamily: 'monospace', fontSize: 11, fontWeight: 'bold'},
+
+  aiBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginRight: 6,
+    borderRadius: 6,
+    backgroundColor: '#1a1026',
+    borderWidth: 1,
+    borderColor: '#c56cf0',
+  },
+  aiBtnText: {fontSize: 12},
+
+  aiOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'flex-end',
+  },
+  aiSheet: {
+    backgroundColor: '#111',
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+    borderWidth: 1,
+    borderColor: '#2a1a3a',
+    padding: 16,
+    maxHeight: '85%',
+    minHeight: '50%',
+  },
+  aiTitle: {
+    color: '#c56cf0',
+    fontFamily: 'monospace',
+    fontSize: 15,
+    fontWeight: 'bold',
+    marginBottom: 6,
+  },
+  aiPath: {color: '#555', fontFamily: 'monospace', fontSize: 10, marginBottom: 10},
+  aiCenter: {alignItems: 'center', justifyContent: 'center', gap: 12, paddingVertical: 30},
+  aiScroll: {flexGrow: 0},
+  aiResult: {color: '#ddd', fontFamily: 'monospace', fontSize: 12, lineHeight: 19},
+  aiKeyRow: {flexDirection: 'row', gap: 8, marginBottom: 10},
+  aiKeyInput: {
+    flex: 1,
+    backgroundColor: '#0d0d0d',
+    borderWidth: 1,
+    borderColor: '#333',
+    borderRadius: 7,
+    color: '#ddd',
+    fontFamily: 'monospace',
+    fontSize: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  aiKeySave: {
+    backgroundColor: '#1a1026',
+    borderWidth: 1,
+    borderColor: '#c56cf0',
+    borderRadius: 7,
+    paddingHorizontal: 14,
+    justifyContent: 'center',
+  },
+  aiKeySaveText: {color: '#c56cf0', fontFamily: 'monospace', fontSize: 12, fontWeight: 'bold'},
+  aiFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  aiChangeKey: {color: '#555', fontFamily: 'monospace', fontSize: 11},
+  aiClose: {
+    backgroundColor: '#1a1a1a',
+    borderWidth: 1,
+    borderColor: '#333',
+    borderRadius: 7,
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+  },
+  aiCloseText: {color: '#aaa', fontFamily: 'monospace', fontSize: 12},
 
   changeBadge: {
     fontFamily: 'monospace',
