@@ -80,6 +80,16 @@ export default function App() {
             component={SaveHunterScreen}
             options={{headerBackTitle: 'Apps'}}
           />
+          <Stack.Screen
+            name="ValueHunt"
+            component={ValueHuntScreen}
+            options={({route}: any) => ({
+              title: route.params?.appName
+                ? `Value Hunt: ${route.params.appName}`
+                : 'Value Hunt',
+              headerBackTitle: 'Back',
+            })}
+          />
         </Stack.Navigator>
       </NavigationContainer>
     </SafeAreaProvider>
