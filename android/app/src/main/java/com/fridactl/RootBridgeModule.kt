@@ -34,11 +34,39 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun checkRoot(promise: Promise) {
-        try {
-            val result = Shell.cmd("id").exec()
-            promise.resolve(result.out.joinToString("").contains("uid=0"))
+        Thread {
+            try {
+                var granted = false
+                // Magisk's su daemon can be slow to answer the first request
+                // (or while it's still initializing after boot) — retry a few
+                // times before reporting "no root".
+                for (attempt in 1..3) {
+                    val result = Shell.cmd("id").exec()
+                    if (result.out.joinToString("").contains("uid=0")) {
+                        granted = true
+                        break
+                    }
+                    if (attempt < 3) Thread.sleep(500)
+                }
+                promise.resolve(granted)
+            } catch (e: Exception) {
+                promise.resolve(false)
+            }
+        }.start()
+    }
+
+    // Read a file's text content directly as root via `cat` — no temp copies,
+    // no chmod. Works under Magisk/KernelSU where the cp+chmod dance silently
+    // fails (the copied file stays root-owned, so the app can't read it and
+    // every identifier lookup ends with found=false).
+    private fun readAsRoot(path: String): String? {
+        return try {
+            val result = Shell.cmd("cat '$path' 2>/dev/null").exec()
+            if (!result.isSuccess) return null
+            val content = result.out.joinToString("\n")
+            content.ifBlank { null }
         } catch (e: Exception) {
-            promise.resolve(false)
+            null
         }
     }
 
@@ -279,14 +307,14 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
             try {
                 val path = "/data/data/$packageName/shared_prefs/appsflyer-data.xml"
 
-                // Read the file via root (copy to tmp then read as app user)
-                val tmp = "${reactApplicationContext.filesDir}/af_tmp_$packageName"
-                val copy = Shell.cmd("cp '$path' '$tmp' && chmod 644 '$tmp' 2>&1").exec()
-                val f = File(tmp)
+                // Read directly as root via `cat` — no temp copy, no chmod.
+                // (cp+chmod silently breaks under Magisk: the copy stays
+                // root-owned and the app can't read it.)
+                val content = readAsRoot(path)
 
                 val result = WritableNativeMap()
 
-                if (!f.exists() || !copy.isSuccess) {
+                if (content == null) {
                     result.putBoolean("found", false)
                     result.putString(
                         "message",
@@ -295,9 +323,6 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                     promise.resolve(result)
                     return@Thread
                 }
-
-                val content = try { f.readText() } catch (e: Exception) { "" }
-                f.delete()
 
                 if (content.isBlank()) {
                     result.putBoolean("found", false)
@@ -350,16 +375,13 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                     "/data/data/com.google.android.gms/shared_prefs/adid_settings.xml",
                     "/data/data/com.google.android.gms/shared_prefs/adid_settings"
                 )
-                val tmp = "${reactApplicationContext.filesDir}/adid_tmp"
                 var content = ""
 
                 for (path in candidates) {
-                    Shell.cmd("cp '$path' '$tmp' && chmod 644 '$tmp' 2>&1").exec()
-                    val f = File(tmp)
-                    if (f.exists()) {
-                        content = try { f.readText() } catch (e: Exception) { "" }
-                        f.delete()
-                        if (content.isNotBlank()) break
+                    val c = readAsRoot(path)
+                    if (c != null) {
+                        content = c
+                        break
                     }
                 }
 
@@ -405,21 +427,16 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
     fun getSingularIds(packageName: String, promise: Promise) {
         Thread {
             val result = WritableNativeMap()
-            val tmp = "${reactApplicationContext.filesDir}/sing_tmp_$packageName"
 
             // ── AIFA: the key NAME itself is the AIFA uuid ──
             try {
                 val path = "/data/data/$packageName/shared_prefs/singular-licensing-api.xml"
-                Shell.cmd("cp '$path' '$tmp' && chmod 644 '$tmp' 2>&1").exec()
-                val f = File(tmp)
-                var aifa: String? = null
-                if (f.exists()) {
-                    val content = try { f.readText() } catch (e: Exception) { "" }
-                    f.delete()
-                    // The AIFA is the uuid that appears as the key NAME — regardless of
-                    // element type (<boolean name="uuid" .../> or <string name="uuid">..)
-                    aifa = Regex("name=\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\"")
-                        .find(content)?.groupValues?.get(1)
+                val content = readAsRoot(path)
+                // The AIFA is the uuid that appears as the key NAME — regardless of
+                // element type (<boolean name="uuid" .../> or <string name="uuid">..)
+                val aifa = content?.let {
+                    Regex("name=\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\"")
+                        .find(it)?.groupValues?.get(1)
                 }
                 result.putString("aifa", aifa)
             } catch (_: Exception) {
@@ -429,17 +446,11 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
             // ── Singular Install ID: value of name="singular-id" ──
             try {
                 val path = "/data/data/$packageName/shared_prefs/pref-singular-id.xml"
-                Shell.cmd("cp '$path' '$tmp' && chmod 644 '$tmp' 2>&1").exec()
-                val f = File(tmp)
-                var installId: String? = null
-                if (f.exists()) {
-                    val content = try { f.readText() } catch (e: Exception) { "" }
-                    f.delete()
-                    installId = extractXmlString(content, "singular-id")
-                    if (installId == null) {
-                        installId = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
-                            .find(content)?.value
-                    }
+                val content = readAsRoot(path)
+                var installId: String? = content?.let { extractXmlString(it, "singular-id") }
+                if (installId == null && content != null) {
+                    installId = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+                        .find(content)?.value
                 }
                 result.putString("installId", installId)
             } catch (_: Exception) {
@@ -514,18 +525,19 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
     fun readFile(path: String, promise: Promise) {
         Thread {
             try {
-                val tmp = "${reactApplicationContext.filesDir}/tmpread"
-                Shell.cmd("cp '$path' '$tmp' && chmod 644 '$tmp' 2>&1").exec()
-                val f = File(tmp)
-                if (!f.exists()) throw Exception("Cannot read file")
-                val size = f.length()
+                // Size first (as root) to decide text vs. hex view
+                val sizeOut = Shell.cmd("stat -c %s '$path' 2>/dev/null").exec().out
+                val size = sizeOut.firstOrNull()?.trim()?.toLongOrNull() ?: -1L
+                if (size < 0) throw Exception("Cannot read file")
+
                 if (size > 512 * 1024) {
                     val head = Shell.cmd("xxd '$path' 2>/dev/null | head -32").exec()
                         .out.joinToString("\n")
                     promise.resolve("[Binary file — ${formatSize(size)}]\n\n$head\n...(truncated)")
                 } else {
-                    val content = f.readText()
-                    if (content.contains(' ')) {
+                    val content = readAsRoot(path)
+                    if (content == null) throw Exception("Cannot read file")
+                    if (content.contains('\u0000')) {
                         val hex = Shell.cmd("xxd '$path' 2>/dev/null | head -64").exec()
                             .out.joinToString("\n")
                         promise.resolve("[Binary — ${formatSize(size)}]\n\n$hex")
@@ -533,7 +545,6 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
                         promise.resolve(content)
                     }
                 }
-                f.delete()
             } catch (e: Exception) {
                 promise.reject("READ_FILE_ERROR", e.message)
             }
