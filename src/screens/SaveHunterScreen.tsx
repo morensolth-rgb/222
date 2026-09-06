@@ -344,6 +344,17 @@ export default function SaveHunterScreen({navigation, route}: any) {
           </TouchableOpacity>
         ))}
       </View>
+
+      {/* Value Hunt entry */}
+      <TouchableOpacity
+        style={s.huntLink}
+        onPress={() =>
+          navigation.navigate('ValueHunt', {packageName, appName})
+        }>
+        <Text style={s.huntLinkText}>
+          🎯 Know your level/coins? Hunt by exact value →
+        </Text>
+      </TouchableOpacity>
       {tab === 'scan' ? scanBody : diffBody}
     </View>
   );
@@ -359,7 +370,19 @@ const s = StyleSheet.create({
   retryText: {color: '#00ff88', fontFamily: 'monospace', fontSize: 13},
   empty:     {color: '#333', textAlign: 'center', marginTop: 40, fontFamily: 'monospace', fontSize: 12, lineHeight: 20},
 
-  tabs: {flexDirection: 'row', gap: 6, padding: 10},
+  tabs: {flexDirection: 'row', gap: 6, padding: 10, paddingBottom: 4},
+
+  huntLink: {
+    marginHorizontal: 10,
+    marginBottom: 6,
+    paddingVertical: 9,
+    borderRadius: 7,
+    backgroundColor: '#101a14',
+    borderWidth: 1,
+    borderColor: '#1e3a2a',
+    alignItems: 'center',
+  },
+  huntLinkText: {color: '#ffd700', fontFamily: 'monospace', fontSize: 11},
   tab: {
     flex: 1,
     paddingVertical: 8,

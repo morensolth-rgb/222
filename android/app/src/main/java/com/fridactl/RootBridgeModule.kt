@@ -658,6 +658,254 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
         }.start()
     }
 
+    // ─────────────────────────────────────────────
+    // Value Hunt — GameGuardian-style value search
+    // ─────────────────────────────────────────────
+
+    // Search all app files for one or more numeric values, in every
+    // encoding games use: ASCII text, int32/int64 LE, float32/float64 LE.
+    // valuesCsv = "6,500" (AND semantics — file must contain ALL values).
+    // Output per line: path|offset|encoding   (offset = byte offset,
+    // or -1 for ASCII matches where the byte offset isn't stable enough)
+    @ReactMethod
+    fun valueSearch(packageName: String, valuesCsv: String, promise: Promise) {
+        Thread {
+            try {
+                val base = "/data/data/" + packageName
+                val values = valuesCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                if (values.isEmpty()) {
+                    promise.reject("VALUE_SEARCH_ERROR", "No values")
+                    return@Thread
+                }
+                // Build a python one-liner payload — python3 exists on most
+                // modern Android via /data/local/tmp? No — use shell+perl-free
+                // approach: do binary search in Kotlin via root `dd` reads.
+                // Simpler & robust: run the whole scan in a root shell with
+                // a POSIX awk? Not for binary. => Use Kotlin-side scan with
+                // root `cat` streaming per candidate file (files are small).
+                val files = Shell.cmd(
+                    "find '" + base + "' -type f -size -4M 2>/dev/null " +
+                    "! -path '*/cache/*' ! -path '*/code_cache/*' ! -path '*/app_webview/*'"
+                ).exec().out
+
+                val results = WritableNativeArray()
+                var scanned = 0
+                for (path in files) {
+                    if (path.isBlank()) continue
+                    if (scanned >= 300) break
+                    scanned++
+                    val bytes = readBytesAsRoot(path) ?: continue
+                    val fileHits = ArrayList<String>()
+                    for (v in values) {
+                        val hits = findValueOffsets(bytes, v)
+                        if (hits.isEmpty()) { fileHits.clear(); break }
+                        fileHits.addAll(hits)
+                    }
+                    if (fileHits.isEmpty()) continue
+                    val map = WritableNativeMap()
+                    map.putString("path", path)
+                    map.putString("size", formatSize(bytes.size.toLong()))
+                    map.putString("hits", fileHits.joinToString(","))
+                    results.pushMap(map)
+                    if (results.size() >= 50) break
+                }
+                promise.resolve(results)
+            } catch (e: Exception) {
+                promise.reject("VALUE_SEARCH_ERROR", e.message)
+            }
+        }.start()
+    }
+
+    // Refine: re-check previous hits — keep only offsets where oldValue
+    // was present and newValue is present now (same file, same offset,
+    // same encoding). prevHitsCsv = "path:offset:encoding;path:offset:encoding"
+    @ReactMethod
+    fun valueRefine(prevHitsCsv: String, newValue: String, promise: Promise) {
+        Thread {
+            try {
+                val results = WritableNativeArray()
+                for (hit in prevHitsCsv.split(";")) {
+                    val parts = hit.split(":")
+                    if (parts.size < 3) continue
+                    // path may contain ':' — rejoin all but last two parts
+                    val enc = parts.last()
+                    val off = parts[parts.size - 2].toLongOrNull() ?: continue
+                    val path = parts.subList(0, parts.size - 2).joinToString(":")
+                    val bytes = readBytesAsRoot(path) ?: continue
+                    if (matchesAt(bytes, off, newValue, enc)) {
+                        val map = WritableNativeMap()
+                        map.putString("path", path)
+                        map.putDouble("offset", off.toDouble())
+                        map.putString("encoding", enc)
+                        results.pushMap(map)
+                    }
+                }
+                promise.resolve(results)
+            } catch (e: Exception) {
+                promise.reject("VALUE_REFINE_ERROR", e.message)
+            }
+        }.start()
+    }
+
+    // Write a numeric value at an exact offset/encoding (binary patch),
+    // or replace an ASCII number in a text file.
+    @ReactMethod
+    fun valueWrite(path: String, offset: Double, encoding: String, newValue: String, promise: Promise) {
+        Thread {
+            try {
+                val bytes = readBytesAsRoot(path)
+                    ?: throw Exception("Cannot read file")
+                val off = offset.toInt()
+                val patched = patchAt(bytes, off, newValue, encoding)
+                    ?: throw Exception("Patch failed — value doesn't fit encoding")
+                val tmp = reactApplicationContext.filesDir.absolutePath + "/tmpwrite"
+                File(tmp).writeBytes(patched)
+                val r = Shell.cmd("cp '" + tmp + "' '" + path + "' 2>&1").exec()
+                File(tmp).delete()
+                if (!r.isSuccess && r.out.isNotEmpty()) {
+                    promise.reject("VALUE_WRITE_ERROR", r.out.joinToString("\n"))
+                } else {
+                    promise.resolve("OK")
+                }
+            } catch (e: Exception) {
+                promise.reject("VALUE_WRITE_ERROR", e.message)
+            }
+        }.start()
+    }
+
+    // ── Value Hunt helpers ──────────────────────────────────────────────────
+
+    private fun readBytesAsRoot(path: String): ByteArray? {
+        // base64 round-trip keeps binary intact through the shell channel
+        val out = Shell.cmd("base64 -w 0 '" + path + "' 2>/dev/null").exec().out
+        val b64 = out.joinToString("").trim()
+        if (b64.isEmpty()) return null
+        return try { Base64.decode(b64, Base64.DEFAULT) } catch (e: Exception) { null }
+    }
+
+    // All encodings for a numeric string; returns list of "offset:encoding"
+    private fun findValueOffsets(bytes: ByteArray, value: String): List<String> {
+        val hits = ArrayList<String>()
+        val d = value.toDoubleOrNull() ?: return hits
+        val l = value.toLongOrNull()
+
+        // ASCII (only if the file looks textual)
+        val ascii = value.toByteArray(Charsets.US_ASCII)
+        var i = indexOf(bytes, ascii, 0)
+        var asciiCount = 0
+        while (i >= 0 && asciiCount < 20) {
+            hits.add(i.toString() + ":ascii")
+            asciiCount++
+            i = indexOf(bytes, ascii, i + 1)
+        }
+
+        // Binary encodings
+        if (l != null) {
+            for (off in findPattern(bytes, le32(l))) hits.add(off.toString() + ":i32")
+            for (off in findPattern(bytes, le64(l))) hits.add(off.toString() + ":i64")
+        }
+        for (off in findPattern(bytes, leF32(d.toFloat()))) hits.add(off.toString() + ":f32")
+        for (off in findPattern(bytes, leF64(d))) hits.add(off.toString() + ":f64")
+        return hits
+    }
+
+    private fun matchesAt(bytes: ByteArray, off: Long, value: String, enc: String): Boolean {
+        val o = off.toInt()
+        if (o < 0 || o >= bytes.size) return false
+        val d = value.toDoubleOrNull() ?: return false
+        val l = value.toLongOrNull()
+        val pat: ByteArray = when (enc) {
+            "ascii" -> value.toByteArray(Charsets.US_ASCII)
+            "i32" -> if (l != null) le32(l) else return false
+            "i64" -> if (l != null) le64(l) else return false
+            "f32" -> leF32(d.toFloat())
+            "f64" -> leF64(d)
+            else -> return false
+        }
+        if (o + pat.size > bytes.size) return false
+        for (k in pat.indices) if (bytes[o + k] != pat[k]) return false
+        return true
+    }
+
+    private fun patchAt(bytes: ByteArray, off: Int, value: String, enc: String): ByteArray? {
+        val d = value.toDoubleOrNull() ?: return null
+        val l = value.toLongOrNull()
+        val out = bytes.copyOf()
+        val pat: ByteArray = when (enc) {
+            "ascii" -> {
+                // ASCII: only safe if new value has same length — otherwise
+                // caller should use writeFile on the whole text. Enforce here.
+                val oldLen = asciiNumberLen(bytes, off)
+                val nv = value.toByteArray(Charsets.US_ASCII)
+                if (nv.size != oldLen) return null
+                nv
+            }
+            "i32" -> if (l != null) le32(l) else return null
+            "i64" -> if (l != null) le64(l) else return null
+            "f32" -> leF32(d.toFloat())
+            "f64" -> leF64(d)
+            else -> return null
+        }
+        if (off + pat.size > out.size) return null
+        System.arraycopy(pat, 0, out, off, pat.size)
+        return out
+    }
+
+    private fun asciiNumberLen(bytes: ByteArray, off: Int): Int {
+        var len = 0
+        var i = off
+        while (i < bytes.size) {
+            val c = bytes[i].toInt().toChar()
+            if (c.isDigit() || c == '-' || c == '.' || c == '+') { len++; i++ } else break
+        }
+        return len
+    }
+
+    private fun le32(v: Long): ByteArray =
+        byteArrayOf(
+            (v and 0xff).toByte(), ((v shr 8) and 0xff).toByte(),
+            ((v shr 16) and 0xff).toByte(), ((v shr 24) and 0xff).toByte())
+
+    private fun le64(v: Long): ByteArray {
+        val b = ByteArray(8)
+        for (k in 0..7) b[k] = ((v shr (8 * k)) and 0xff).toByte()
+        return b
+    }
+
+    private fun leF32(v: Float): ByteArray =
+        le32(java.lang.Float.floatToRawIntBits(v).toLong() and 0xffffffffL)
+
+    private fun leF64(v: Double): ByteArray =
+        le64(java.lang.Double.doubleToRawLongBits(v))
+
+    private fun findPattern(hay: ByteArray, needle: ByteArray): List<Int> {
+        val out = ArrayList<Int>()
+        var i = indexOf(hay, needle, 0)
+        while (i >= 0 && out.size < 20) {
+            out.add(i)
+            i = indexOf(hay, needle, i + 1)
+        }
+        return out
+    }
+
+    private fun indexOf(hay: ByteArray, needle: ByteArray, from: Int): Int {
+        if (needle.isEmpty() || hay.size < needle.size) return -1
+        val first = needle[0]
+        var i = from
+        val max = hay.size - needle.size
+        while (i <= max) {
+            if (hay[i] == first) {
+                var ok = true
+                for (k in 1 until needle.size) {
+                    if (hay[i + k] != needle[k]) { ok = false; break }
+                }
+                if (ok) return i
+            }
+            i++
+        }
+        return -1
+    }
+
     @ReactMethod
     fun readFile(path: String, promise: Promise) {
         Thread {

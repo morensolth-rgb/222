@@ -8,6 +8,7 @@ import FileBrowserScreen  from './src/screens/FileBrowserScreen';
 import AfScreen           from './src/screens/AfScreen';
 import PlayerPrefsScreen  from './src/screens/PlayerPrefsScreen';
 import SaveHunterScreen   from './src/screens/SaveHunterScreen';
+import ValueHuntScreen    from './src/screens/ValueHuntScreen';
 
 const Stack = createNativeStackNavigator();
 

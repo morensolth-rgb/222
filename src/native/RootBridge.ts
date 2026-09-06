@@ -50,7 +50,26 @@ export const rootBridge = {
   writeFile:        (path: string, content: string): Promise<string> => RootBridge.writeFile(path, content),
   scanSaves:        (packageName: string): Promise<SaveCandidate[]> => RootBridge.scanSaves(packageName),
   snapshot:         (packageName: string): Promise<string> => RootBridge.snapshot(packageName),
+  valueSearch:      (packageName: string, valuesCsv: string): Promise<ValueSearchFile[]> =>
+    RootBridge.valueSearch(packageName, valuesCsv),
+  valueRefine:      (prevHitsCsv: string, newValue: string): Promise<ValueHit[]> =>
+    RootBridge.valueRefine(prevHitsCsv, newValue),
+  valueWrite:       (path: string, offset: number, encoding: string, newValue: string): Promise<string> =>
+    RootBridge.valueWrite(path, offset, encoding, newValue),
 };
+
+export interface ValueHit {
+  path: string;
+  offset: number;
+  encoding: 'ascii' | 'i32' | 'i64' | 'f32' | 'f64';
+}
+
+export interface ValueSearchFile {
+  path: string;
+  size: string;
+  /** comma-separated "offset:encoding" pairs across all searched values */
+  hits: string;
+}
 
 export interface SaveCandidate {
   score: number;
