@@ -56,6 +56,16 @@ export default function FileBrowserScreen({navigation, route}: any) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPath]);
 
+  // ── Auto-open a file when navigated here with an openFile param ───────────
+  useEffect(() => {
+    const target: string | undefined = route.params.openFile;
+    if (target) {
+      navigation.setParams({openFile: undefined});
+      openFile({path: target, name: target.split('/').pop() ?? target} as FileEntry);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const loadDir = useCallback(async (path: string) => {
     setLoading(true);
     setError('');

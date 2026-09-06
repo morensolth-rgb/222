@@ -7,6 +7,7 @@ import AppsScreen         from './src/screens/AppsScreen';
 import FileBrowserScreen  from './src/screens/FileBrowserScreen';
 import AfScreen           from './src/screens/AfScreen';
 import PlayerPrefsScreen  from './src/screens/PlayerPrefsScreen';
+import SaveHunterScreen   from './src/screens/SaveHunterScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -48,6 +49,11 @@ export default function App() {
               title: route.params?.appName ?? 'PlayerPrefs',
               headerBackTitle: 'Apps',
             })}
+          />
+          <Stack.Screen
+            name="SaveHunter"
+            component={SaveHunterScreen}
+            options={{headerBackTitle: 'Apps'}}
           />
         </Stack.Navigator>
       </NavigationContainer>

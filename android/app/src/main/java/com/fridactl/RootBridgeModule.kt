@@ -574,6 +574,90 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
         }.start()
     }
 
+    // ─────────────────────────────────────────────
+    // Save Hunter — find where a game stores progress
+    // ─────────────────────────────────────────────
+
+    // Quick scan: walk /data/data/<pkg>, classify each file, grep for
+    // progress keywords in content, return scored candidates.
+    // Output per line: score|path|size|mtime|kind|hits
+    @ReactMethod
+    fun scanSaves(packageName: String, promise: Promise) {
+        Thread {
+            try {
+                val base = "/data/data/" + packageName
+                val kw = "coin|gold|gem|crystal|diamond|cash|money|buck|currency|credit|token|shard|level|wave|stage|chapter|progress|complete|unlock|kill|score|exp|rank|tier|mission|achiev|victory|best|prestige|booster|energy|lives|heart|ammo|ticket|spin|hint|revive|shield|powerup|inventory|save|player"
+                val script = StringBuilder()
+                script.append("base='").append(base).append("'\n")
+                script.append("find \"$base\" -type f -size -2M 2>/dev/null ! -path '*/cache/*' ! -path '*/code_cache/*' ! -path '*/app_webview/*' ! -path '*/no_backup/*' ! -path '*/firebase*' ! -path '*/crashlytics*' ! -path '*/.com.google*' | while read -r f; do\n")
+                script.append("  size=$(stat -c %s \"$f\" 2>/dev/null) || continue\n")
+                script.append("  mtime=$(stat -c %Y \"$f\" 2>/dev/null) || continue\n")
+                script.append("  head=$(head -c 16 \"$f\" 2>/dev/null | tr -d '\\000')\n")
+                script.append("  case \"$head\" in\n")
+                script.append("    SQLite*) kind=sqlite ;;\n")
+                script.append("    \\<\\?xml*|\\<map*) kind=xml ;;\n")
+                script.append("    \\{*|\\[*) kind=json ;;\n")
+                script.append("    *) kind=bin ;;\n")
+                script.append("  esac\n")
+                script.append("  hits=$(LC_ALL=C grep -aio -m 20 -E '").append(kw).append("' \"$f\" 2>/dev/null | sort -u | wc -l)\n")
+                script.append("  [ \"$hits\" -gt 0 ] || continue\n")
+                script.append("  score=$hits\n")
+                script.append("  case \"$f\" in\n")
+                script.append("    *shared_prefs*) score=$((score+3)) ;;\n")
+                script.append("    *files*) score=$((score+2)) ;;\n")
+                script.append("    *databases*) score=$((score+2)) ;;\n")
+                script.append("  esac\n")
+                script.append("  echo \"$score|$f|$size|$mtime|$kind|$hits\"\n")
+                script.append("done | sort -t'|' -k1 -rn | head -40\n")
+                val result = Shell.cmd("sh", "-c", script.toString()).exec()
+                val arr = WritableNativeArray()
+                for (line in result.out) {
+                    if (line.isBlank()) continue
+                    val p = line.split("|", limit = 6)
+                    if (p.size < 6) continue
+                    val map = WritableNativeMap()
+                    map.putInt("score", p[0].toIntOrNull() ?: 0)
+                    map.putString("path", p[1])
+                    map.putString("size", formatSize(p[2].toLongOrNull() ?: 0L))
+                    map.putDouble("mtime", (p[3].toLongOrNull() ?: 0L).toDouble())
+                    map.putString("kind", p[4])
+                    map.putInt("hits", p[5].toIntOrNull() ?: 0)
+                    arr.pushMap(map)
+                }
+                promise.resolve(arr)
+            } catch (e: Exception) {
+                promise.reject("SCAN_ERROR", e.message)
+            }
+        }.start()
+    }
+
+    // Snapshot: for every file under /data/data/<pkg> output
+    // "path|size|mtime|md5" (md5 only for files < 512KB).
+    // JS stores this and diffs against a later snapshot.
+    @ReactMethod
+    fun snapshot(packageName: String, promise: Promise) {
+        Thread {
+            try {
+                val base = "/data/data/" + packageName
+                val script = StringBuilder()
+                script.append("find '").append(base).append("' -type f -size -2M 2>/dev/null ! -path '*/cache/*' ! -path '*/code_cache/*' ! -path '*/app_webview/*' | while read -r f; do\n")
+                script.append("  size=$(stat -c %s \"$f\" 2>/dev/null) || continue\n")
+                script.append("  mtime=$(stat -c %Y \"$f\" 2>/dev/null) || continue\n")
+                script.append("  if [ \"$size\" -lt 524288 ]; then\n")
+                script.append("    md5=$(md5sum \"$f\" 2>/dev/null | cut -d' ' -f1)\n")
+                script.append("  else\n")
+                script.append("    md5=-\n")
+                script.append("  fi\n")
+                script.append("  echo \"$f|$size|$mtime|$md5\"\n")
+                script.append("done\n")
+                val result = Shell.cmd("sh", "-c", script.toString()).exec()
+                promise.resolve(result.out.joinToString("\n"))
+            } catch (e: Exception) {
+                promise.reject("SNAPSHOT_ERROR", e.message)
+            }
+        }.start()
+    }
+
     @ReactMethod
     fun readFile(path: String, promise: Promise) {
         Thread {

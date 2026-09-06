@@ -159,8 +159,12 @@ const TYPE_COLORS: Record<PrefType, string> = {
 // ─── Component ───────────────────────────────────────────────────────────────
 export default function PlayerPrefsScreen({navigation, route}: any) {
   const packageName: string = route.params.packageName;
-  const appName: string = route.params.appName ?? packageName;
-  const prefsPath = `/data/data/${packageName}/shared_prefs/${packageName}.v2.playerprefs.xml`;
+  // Generic mode: any XML prefs file path can be passed directly
+  const prefsPath: string =
+    route.params.path ??
+    `/data/data/${packageName}/shared_prefs/${packageName}.v2.playerprefs.xml`;
+  const appName: string =
+    route.params.appName ?? route.params.title ?? packageName;
 
   const [entries, setEntries] = useState<PrefEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -319,7 +323,7 @@ export default function PlayerPrefsScreen({navigation, route}: any) {
           style={[s.retryBtn, {marginTop: 8, borderColor: '#333'}]}
           onPress={() =>
             navigation.replace('FileBrowser', {
-              path: `/data/data/${packageName}/shared_prefs`,
+              path: prefsPath.substring(0, prefsPath.lastIndexOf('/')),
               title: packageName.split('.').pop(),
             })
           }>
@@ -343,6 +347,17 @@ export default function PlayerPrefsScreen({navigation, route}: any) {
         autoCorrect={false}
         autoCapitalize="none"
       />
+
+      {/* Jump to Save Hunter */}
+      <TouchableOpacity
+        style={s.hunterLink}
+        onPress={() =>
+          navigation.navigate('SaveHunter', {packageName, appName})
+        }>
+        <Text style={s.hunterLinkText}>
+          🔍 Progress not here? Hunt the real save file →
+        </Text>
+      </TouchableOpacity>
 
       <FlatList
         data={interesting}
@@ -418,6 +433,18 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#1e1e1e',
   },
+
+  hunterLink: {
+    marginHorizontal: 10,
+    marginBottom: 6,
+    paddingVertical: 8,
+    borderRadius: 7,
+    backgroundColor: '#101a14',
+    borderWidth: 1,
+    borderColor: '#1e3a2a',
+    alignItems: 'center',
+  },
+  hunterLinkText: {color: '#5bc8ff', fontFamily: 'monospace', fontSize: 11},
 
   sectionHead: {
     flexDirection: 'row',

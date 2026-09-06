@@ -48,7 +48,18 @@ export const rootBridge = {
   readDir:          (path: string): Promise<FileEntry[]> => RootBridge.readDir(path),
   readFile:         (path: string): Promise<string>      => RootBridge.readFile(path),
   writeFile:        (path: string, content: string): Promise<string> => RootBridge.writeFile(path, content),
+  scanSaves:        (packageName: string): Promise<SaveCandidate[]> => RootBridge.scanSaves(packageName),
+  snapshot:         (packageName: string): Promise<string> => RootBridge.snapshot(packageName),
 };
+
+export interface SaveCandidate {
+  score: number;
+  path:  string;
+  size:  string;
+  mtime: number; // unix seconds
+  kind:  'xml' | 'json' | 'sqlite' | 'bin';
+  hits:  number;
+}
 
 export interface FileEntry {
   name:  string;

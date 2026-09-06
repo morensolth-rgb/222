@@ -127,7 +127,7 @@ export default function AppsScreen({navigation}: {navigation: any}) {
     });
   };
 
-  // Long-press: try Unity PlayerPrefs editor first, fall back to file browser
+  // Long-press: Unity PlayerPrefs editor when it exists, else Save Hunter
   const openPrefs = async (item: AppInfo) => {
     const prefsPath =
       `/data/data/${item.packageName}/shared_prefs/${item.packageName}.v2.playerprefs.xml`;
@@ -141,9 +141,9 @@ export default function AppsScreen({navigation}: {navigation: any}) {
         return;
       }
     } catch (_) {}
-    navigation.navigate('FileBrowser', {
-      path:  `/data/data/${item.packageName}/shared_prefs`,
-      title: item.packageName.split('.').pop() ?? item.packageName,
+    navigation.navigate('SaveHunter', {
+      packageName: item.packageName,
+      appName: item.appName,
     });
   };
 
