@@ -26,6 +26,22 @@ export default function AfScreen({route}: any) {
   const [singularInstallId, setSingularInstallId] = useState<string | null>(null);
   const [raw, setRaw] = useState('');
   const [showRaw, setShowRaw] = useState(false);
+  const [diag, setDiag] = useState('');
+  const [showDiag, setShowDiag] = useState(false);
+  const [diagLoading, setDiagLoading] = useState(false);
+
+  const runDiag = async () => {
+    if (showDiag) { setShowDiag(false); return; }
+    setShowDiag(true);
+    setDiagLoading(true);
+    try {
+      const report = await rootBridge.diagnose(packageName);
+      setDiag(report);
+    } catch (e: any) {
+      setDiag(`diagnose failed: ${e?.message ?? e}`);
+    }
+    setDiagLoading(false);
+  };
 
   useEffect(() => {
     load();
@@ -218,6 +234,21 @@ export default function AfScreen({route}: any) {
             <Text style={s.rawToggle}>{showRaw ? '▼' : '▶'} Raw appsflyer-data.xml</Text>
           </TouchableOpacity>
           {showRaw && <Text style={s.raw} selectable>{raw}</Text>}
+        </View>
+      )}
+
+      {!loading && !hasAnyData && (
+        <View style={s.rawBox}>
+          <TouchableOpacity onPress={runDiag}>
+            <Text style={s.rawToggle}>
+              {showDiag ? '▼' : '▶'} Root diagnostics — why no identifiers?
+            </Text>
+          </TouchableOpacity>
+          {showDiag && (
+            diagLoading
+              ? <Text style={s.raw}>Running…</Text>
+              : <Text style={s.raw} selectable>{diag}</Text>
+          )}
         </View>
       )}
     </ScrollView>

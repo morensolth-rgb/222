@@ -22,7 +22,11 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
             Shell.enableVerboseLogging = false
             Shell.setDefaultBuilder(
                 Shell.Builder.create()
-                    .setFlags(Shell.FLAG_REDIRECT_STDERR)
+                    // FLAG_MOUNT_MASTER: run the root shell in the GLOBAL mount
+                    // namespace. Under Magisk the default is the requester's
+                    // namespace, where other apps' /data/data may be invisible —
+                    // which silently kills every identifier read.
+                    .setFlags(Shell.FLAG_REDIRECT_STDERR or Shell.FLAG_MOUNT_MASTER)
                     .setTimeout(60)
             )
         }
@@ -68,6 +72,55 @@ class RootBridgeModule(reactContext: ReactApplicationContext) :
         } catch (e: Exception) {
             null
         }
+    }
+
+    // ─────────────────────────────────────────────
+    // diagnose — one-call health check: is the root shell alive, which
+    // namespace/mount mode it runs in, and can it actually see the target
+    // app's shared_prefs + the GMS adid file. Returns a human-readable
+    // report so we stop guessing why identifiers come back empty.
+    // ─────────────────────────────���───────────────
+    @ReactMethod
+    fun diagnose(packageName: String, promise: Promise) {
+        Thread {
+            val lines = mutableListOf<String>()
+            try {
+                // 1. Is any root shell alive at all?
+                val id = Shell.cmd("id").exec()
+                lines += "id: ${id.out.joinToString(" ").ifBlank { "<empty>" }} (exit=${id.code})"
+
+                // 2. Which su binary answered?
+                val whichSu = Shell.cmd("command -v su; readlink -f \$(command -v su) 2>/dev/null").exec()
+                lines += "su: ${whichSu.out.joinToString(" | ").ifBlank { "<not found>" }}"
+
+                // 3. SELinux mode + our context
+                val se = Shell.cmd("getenforce 2>/dev/null; cat /proc/self/attr/current 2>/dev/null").exec()
+                lines += "selinux: ${se.out.joinToString(" | ").ifBlank { "<n/a>" }}"
+
+                // 4. Mount namespace of this shell vs init (pid 1) — if they
+                //    differ we're in an isolated/requester namespace (Magisk
+                //    default), which is exactly what hides /data/data.
+                val ns = Shell.cmd("readlink /proc/self/ns/mnt; readlink /proc/1/ns/mnt").exec()
+                lines += "mnt ns (self|init): ${ns.out.joinToString(" | ").ifBlank { "<n/a>" }}"
+
+                // 5. Can we see /data/data at all?
+                val dd = Shell.cmd("ls /data/data 2>&1 | head -5; echo EXIT=\$?").exec()
+                lines += "ls /data/data: ${dd.out.joinToString(" | ").ifBlank { "<empty>" }}"
+
+                // 6. Target app shared_prefs
+                val sp = Shell.cmd("ls '/data/data/$packageName/shared_prefs' 2>&1 | head -10; echo EXIT=\$?").exec()
+                lines += "prefs[$packageName]: ${sp.out.joinToString(" | ").ifBlank { "<empty>" }}"
+
+                // 7. The actual files we read
+                val af = Shell.cmd("ls -la '/data/data/$packageName/shared_prefs/appsflyer-data.xml' 2>&1").exec()
+                lines += "appsflyer-data.xml: ${af.out.joinToString(" ").ifBlank { "<missing>" }}"
+                val gms = Shell.cmd("ls -la '/data/data/com.google.android.gms/shared_prefs/adid_settings.xml' 2>&1").exec()
+                lines += "adid_settings.xml: ${gms.out.joinToString(" ").ifBlank { "<missing>" }}"
+            } catch (e: Exception) {
+                lines += "diagnose error: ${e.message}"
+            }
+            promise.resolve(lines.joinToString("\n"))
+        }.start()
     }
 
     @ReactMethod

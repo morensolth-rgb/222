@@ -36,6 +36,7 @@ export interface AppSdkInfo {
 
 export const rootBridge = {
   checkRoot:        (): Promise<boolean>   => RootBridge.checkRoot(),
+  diagnose:         (packageName: string): Promise<string> => RootBridge.diagnose(packageName),
   execShell:        (cmd: string): Promise<string> => RootBridge.execShell(cmd),
   getInstalledApps: (): Promise<AppInfo[]> => RootBridge.getInstalledApps(),
   getAppIcon:       (packageName: string): Promise<string | null> => RootBridge.getAppIcon(packageName),
