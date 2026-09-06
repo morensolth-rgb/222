@@ -3,9 +3,10 @@ import {NavigationContainer} from '@react-navigation/native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 
-import AppsScreen        from './src/screens/AppsScreen';
-import FileBrowserScreen from './src/screens/FileBrowserScreen';
-import AfScreen          from './src/screens/AfScreen';
+import AppsScreen         from './src/screens/AppsScreen';
+import FileBrowserScreen  from './src/screens/FileBrowserScreen';
+import AfScreen           from './src/screens/AfScreen';
+import PlayerPrefsScreen  from './src/screens/PlayerPrefsScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -37,6 +38,14 @@ export default function App() {
             component={FileBrowserScreen}
             options={({route}: any) => ({
               title: route.params?.title ?? 'Files',
+              headerBackTitle: 'Apps',
+            })}
+          />
+          <Stack.Screen
+            name="PlayerPrefs"
+            component={PlayerPrefsScreen}
+            options={({route}: any) => ({
+              title: route.params?.appName ?? 'PlayerPrefs',
               headerBackTitle: 'Apps',
             })}
           />

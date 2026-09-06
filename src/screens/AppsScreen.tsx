@@ -127,6 +127,26 @@ export default function AppsScreen({navigation}: {navigation: any}) {
     });
   };
 
+  // Long-press: try Unity PlayerPrefs editor first, fall back to file browser
+  const openPrefs = async (item: AppInfo) => {
+    const prefsPath =
+      `/data/data/${item.packageName}/shared_prefs/${item.packageName}.v2.playerprefs.xml`;
+    try {
+      const out = await rootBridge.execShell(`test -f '${prefsPath}' && echo YES`);
+      if (out.trim().endsWith('YES')) {
+        navigation.navigate('PlayerPrefs', {
+          packageName: item.packageName,
+          appName: item.appName,
+        });
+        return;
+      }
+    } catch (_) {}
+    navigation.navigate('FileBrowser', {
+      path:  `/data/data/${item.packageName}/shared_prefs`,
+      title: item.packageName.split('.').pop() ?? item.packageName,
+    });
+  };
+
   const userCount   = apps.filter(a => !a.isSystemApp).length;
   const systemCount = apps.filter(a => a.isSystemApp).length;
 
@@ -143,12 +163,7 @@ export default function AppsScreen({navigation}: {navigation: any}) {
       <TouchableOpacity
         style={[styles.cell, isSelected && styles.cellSelected]}
         onPress={() => openAf(item)}
-        onLongPress={() =>
-          navigation.navigate('FileBrowser', {
-            path:  `/data/data/${item.packageName}/shared_prefs`,
-            title: item.packageName.split('.').pop() ?? item.packageName,
-          })
-        }>
+        onLongPress={() => openPrefs(item)}>
         <AppIcon packageName={item.packageName} />
         <Text style={styles.cellName} numberOfLines={2}>{item.appName}</Text>
         {!!sdk && <Text style={styles.sdkLabel}>{sdk}</Text>}
